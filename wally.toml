@@ -1,0 +1,12 @@
+[package]
+name = "ker/junction"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+description = "Single Script Junction Architecture (SSJA) framework for Roblox. One Bootstrap, one Junction, one Context -- modules never require each other."
+license = "MIT"
+authors = ["mkl48"]
+include = ["default.project.json", "wally.toml", "src", "README.md", "LICENSE"]
+
+[dependencies]
+Substance = "ker/substance@0.1.0"
