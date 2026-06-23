@@ -57,9 +57,9 @@ drop the package under `ReplicatedStorage.Junky`.
 
 | Piece | Role |
 | --- | --- |
-| **Configure** | `Junky.Configure(config)` — one call per side. Discovers modules, validates the Junction, runs `:Init` then `:Start` in order, returns an **app handle**. |
+| **Configure** | `Junky.Configure(config)` — one call per side. Discovers modules, validates the Junction, calls `:Start` in priority order, returns an **app handle**. |
 | **Junction** | A static `{ Network, Local }` table. Every event declares a `Destination` (and optional `Dynamic` resolver). The single source of truth for routing. |
-| **Context** | Injected into `:Init`/`:Start`. The only way modules talk: `Post`, `Subscribe`, `Request`, `Respond`, `Guard`, `Once`, `Await`, `Get*`. |
+| **Context** | Injected into `:Start`. The only way modules talk: `Post`, `Subscribe`, `Request`, `Respond`, `Guard`, `Once`, `Await`, `Get*`. |
 | **Controller** | Client-side domain wrapper. Coupled to a Manager. |
 | **Manager** | Server-side domain wrapper. Coupled to a Controller. |
 | **Service** | Domain logic + state owner. Both sides. Decoupled. |
@@ -86,16 +86,16 @@ client, Managers on the server, Services on both).
 ```lua
 local Module = {}
 
-function Module:Init(context)  end   -- optional. ALL :Init run before ANY :Start.
-function Module:Start(context) end   -- Controllers/Managers implement Init and/or Start.
+function Module:Start(context) end   -- the boot hook. Controllers/Managers implement it; Services may.
 function Module:Stop()         end   -- optional. Runs on app:Stop().
 
 return Module
 ```
 
-The **two phases** are the point: wire up your subscribers, responders, and guards in `:Init`, and
-by the time any `:Start` runs every module's wiring already exists. That removes most boot-order
-races without reaching for `Await`. Boot order within each phase comes from the priority maps.
+`:Start` is the single boot hook. Modules are required up front but never touch each other; only
+the order of `:Start` matters, and that comes from the priority maps. For timing-sensitive
+dependencies between modules, use [`Context:Await`](#reactions) rather than relying on exact boot
+order.
 
 `Junky.Configure` returns an **app handle**:
 
@@ -154,7 +154,7 @@ A module:
 ```lua
 local CharacterController = {}
 
-function CharacterController:Init(context)
+function CharacterController:Start(context)
     local Network = context:Network("Character")
     local Ability = context:Local("Ability")
 
@@ -162,10 +162,8 @@ function CharacterController:Init(context)
         Network:Post("Damaged", combo)               -- to the server
     end)
     Network:Subscribe("Ragdoll", function(state) end) -- server's authoritative result
-end
 
-function CharacterController:Start(context)
-    context:Network("Character"):Request("QueryHealth")  -- ask the server
+    Network:Request("QueryHealth")                    -- ask the server
         :Timeout(5)
         :Next(function(health) print("HP:", health) end)
         :Catch(warn)
@@ -238,7 +236,7 @@ requests invoke an in-process responder. Exactly one `Respond` handler answers a
 
 ```lua
 -- server
-function CharacterManager:Init(context)
+function CharacterManager:Start(context)
     context:Network("Character"):Respond("QueryHealth", function(_payload, player)
         return context:GetService("CharacterService"):GetHealth(player)
     end)
@@ -319,7 +317,7 @@ return { PlayerService = 1, CharacterService = 2 }
 
 Class-tier modules run before Services within each phase. Modules absent from both maps boot last
 with a warning. At boot, Junky also **validates the Junction**: any `Local` destination that names
-no module on this side is flagged (a likely typo). Every `:Init`/`:Start`/`:Stop` is wrapped so one
+no module on this side is flagged (a likely typo). Every `:Start`/`:Stop` is wrapped so one
 module erroring doesn't abort the boot.
 
 ---
@@ -333,7 +331,7 @@ module erroring doesn't abort the boot.
 | 3 | Only Junky touches RemoteEvents/Functions | `Network` is the sole transport |
 | 4 | Junction is the only routing definition | undeclared posts warn; Local destinations validated |
 | 5 | Manifest is read-only | deep-frozen at boot |
-| 6 | Controllers/Managers implement `:Init` and/or `:Start` | warns if neither |
+| 6 | Controllers/Managers implement `:Start` | warns if missing |
 | 7 | Services implement lifecycle only when needed | all hooks optional |
 | 8 | A Manager may call its own Service | `Context:GetService` |
 

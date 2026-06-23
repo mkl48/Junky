@@ -94,11 +94,10 @@ export type App = {
 	Stop: (self: App) -> (),
 }
 
--- A module. :Init and :Start both receive the Context; :Stop receives nothing.
--- Controllers/Managers implement at least one of :Init/:Start; Services are free
--- to implement none.
+-- A module. :Start is the boot hook and receives the Context; :Stop (optional)
+-- runs on app:Stop() and receives nothing. Controllers/Managers implement :Start;
+-- Services may.
 export type Module = {
-	Init: ((self: any, context: Context) -> ())?,
 	Start: ((self: any, context: Context) -> ())?,
 	Stop: ((self: any) -> ())?,
 	[any]: any,

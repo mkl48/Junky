@@ -2,13 +2,13 @@
 -- client/CharacterController.lua
 -- Plinko Labs
 --
--- The client half of the Character domain. Subscriptions are wired in :Init;
--- :Start kicks off a one-off QueryHealth request to show request/response. It
--- never references ComboController, CharacterManager, or CharacterService directly.
+-- The client half of the Character domain. It wires its subscriptions and kicks
+-- off a one-off QueryHealth request to show request/response. It never references
+-- ComboController, CharacterManager, or CharacterService directly.
 
 local CharacterController = {}
 
-function CharacterController:Init(context)
+function CharacterController:Start(context)
 	local Network = context:Network("Character")
 	local Ability = context:Local("Ability")
 
@@ -24,10 +24,6 @@ function CharacterController:Init(context)
 			:format(state.Health, state.Status))
 		-- play ragdoll animation using `state`
 	end)
-end
-
-function CharacterController:Start(context)
-	local Network = context:Network("Character")
 
 	-- Request/response: ask the server for our health, with a 5s timeout.
 	Network:Request("QueryHealth")

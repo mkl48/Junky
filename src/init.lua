@@ -24,7 +24,7 @@
 --   -- app:Stop()     -> teardown (rare; mostly for tests / soft restarts)
 --
 -- Junky detects the side from RunService, finds Substance automatically, validates
--- the Junction, runs every :Init then every :Start in priority order, and injects a
+-- the Junction, and calls every module's :Start in priority order, injecting a
 -- Context into each.
 
 local Bootstrap = require(script.Bootstrap)

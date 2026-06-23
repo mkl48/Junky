@@ -3,14 +3,13 @@
 -- Plinko Labs
 --
 -- Owner of the Character state slice. It is decoupled: it doesn't care how data
--- arrives. It wires its subscription in :Init (so it exists before any module's
--- :Start runs), initializes per-player state on Player.DataLoaded, and exposes
--- ApplyDamage / GetHealth for its Manager to call.
+-- arrives. It subscribes in :Start, initializes per-player state on
+-- Player.DataLoaded, and exposes ApplyDamage / GetHealth for its Manager to call.
 
 local CharacterService = {}
 CharacterService.State = {}
 
-function CharacterService:Init(context)
+function CharacterService:Start(context)
 	local Player = context:Local("Player")
 	local manifest = context:GetPackage("Manifest")
 

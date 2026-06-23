@@ -6,13 +6,13 @@
 -- CharacterController. It receives the network hit, applies authoritative logic
 -- via its own Service, posts the result back, and answers QueryHealth requests.
 --
--- Wiring goes in :Init (a Guard, a responder, a subscriber); by the time any
--- :Start runs, all of it exists. Note the sanctioned exception: a Manager may call
--- its own domain Service via Context:GetService, never through require.
+-- It wires a Guard, a responder, and a subscriber in :Start. Note the sanctioned
+-- exception: a Manager may call its own domain Service via Context:GetService,
+-- never through require.
 
 local CharacterManager = {}
 
-function CharacterManager:Init(context)
+function CharacterManager:Start(context)
 	local Network = context:Network("Character")
 	local CharacterService = context:GetService("CharacterService")
 

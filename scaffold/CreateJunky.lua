@@ -39,7 +39,7 @@ n_Junky.Source = [====[
 --   -- app:Stop()     -> teardown (rare; mostly for tests / soft restarts)
 --
 -- Junky detects the side from RunService, finds Substance automatically, validates
--- the Junction, runs every :Init then every :Start in priority order, and injects a
+-- the Junction, and calls every module's :Start in priority order, injecting a
 -- Context into each.
 
 local Bootstrap = require(script.Bootstrap)
@@ -120,12 +120,12 @@ n_Bootstrap.Source = [====[
 --   3. discovers module scripts and classifies them by name suffix,
 --   4. filters by side (Controllers -> client, Managers -> server, Services -> both),
 --   5. validates the Junction against what it found,
---   6. runs every :Init in priority order, then every :Start in priority order,
+--   6. calls every module's :Start in priority order, each with its own Context,
 --   7. returns a handle with :Inspect() and :Stop().
 --
--- Two phases (Init then Start) mean a module can wire up subscribers/responders in
--- :Init and be sure every other module's wiring exists before any :Start fires --
--- which removes most boot-order races without reaching for Await.
+-- :Start is the single boot hook. Modules are required up front but never touch
+-- each other; only the order of :Start matters, and that comes from the priority
+-- maps. Timing-sensitive cross-module dependencies use Context:Await.
 
 local RunService = game:GetService("RunService")
 
@@ -297,18 +297,9 @@ function Bootstrap.Boot(config, substance)
 		contexts[name] = Context.new(name, runtime)
 	end
 
-	-- phase 1: Init (optional on every kind) ------------------------------
-	for _, name in order do
-		local moduleTable = instances[name]
-		if type(moduleTable) == "table" and type(moduleTable.Init) == "function" then
-			local ok, err = pcall(moduleTable.Init, moduleTable, contexts[name])
-			if not ok then
-				warn(("[Junky] %s:Init() errored: %s"):format(name, tostring(err)))
-			end
-		end
-	end
-
-	-- phase 2: Start (required for Controllers/Managers) ------------------
+	-- :Start in priority order -- the single boot hook. Controllers and Managers
+	-- must implement it; Services may. Cross-module timing is handled by the
+	-- priority maps and Context:Await, not by a second phase.
 	for _, name in order do
 		local moduleTable = instances[name]
 		local kind = kinds[name]
@@ -317,8 +308,8 @@ function Bootstrap.Boot(config, substance)
 			if not ok then
 				warn(("[Junky] %s:Start() errored: %s"):format(name, tostring(err)))
 			end
-		elseif kind ~= "Service" and type(moduleTable) == "table" and type(moduleTable.Init) ~= "function" then
-			warn(("[Junky] %s is a %s and must implement :Start() (or :Init())"):format(name, kind))
+		elseif kind ~= "Service" then
+			warn(("[Junky] %s is a %s and must implement :Start()"):format(name, kind))
 		end
 	end
 
@@ -1483,11 +1474,10 @@ export type App = {
 	Stop: (self: App) -> (),
 }
 
--- A module. :Init and :Start both receive the Context; :Stop receives nothing.
--- Controllers/Managers implement at least one of :Init/:Start; Services are free
--- to implement none.
+-- A module. :Start is the boot hook and receives the Context; :Stop (optional)
+-- runs on app:Stop() and receives nothing. Controllers/Managers implement :Start;
+-- Services may.
 export type Module = {
-	Init: ((self: any, context: Context) -> ())?,
 	Start: ((self: any, context: Context) -> ())?,
 	Stop: ((self: any) -> ())?,
 	[any]: any,
