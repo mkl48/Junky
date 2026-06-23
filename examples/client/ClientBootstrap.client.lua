@@ -3,17 +3,17 @@
 -- Plinko Labs
 --
 -- The single client entry point. Lives in StarterPlayerScripts. Same call as the
--- server -- Junction detects the side and boots only the client-appropriate
--- modules (Controllers + client Services).
+-- server -- Junky detects the side and boots only the client-appropriate modules
+-- (Controllers + client Services).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
-local Junction = require(ReplicatedStorage.Packages.Junction)
+local Junky = require(ReplicatedStorage.Packages.Junky)
 local Shared = ReplicatedStorage.Shared
 local LocalPlayer = Players.LocalPlayer
 
-Junction.Ignite({
+Junky.Configure({
 	Junction = require(Shared.Junction),
 	Manifest = require(Shared.Manifest),
 	ClassPriority = require(Shared.ClassPriorityMap),
@@ -25,4 +25,4 @@ Junction.Ignite({
 	},
 })
 
-print("[ClientBootstrap] Junction ignited (Client)")
+print("[ClientBootstrap] Junky configured (Client)")

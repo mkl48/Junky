@@ -3,22 +3,22 @@
 -- Plinko Labs
 --
 -- The single server entry point. Lives in ServerScriptService. There is exactly
--- one of these per side. It points Junction at the config + module folders and
--- ignites; Junction does the rest (discovery, ordering, Context injection).
+-- one of these per side. It points Junky at the config + module folders and calls
+-- Configure; Junky does the rest (discovery, ordering, Context injection).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local Junction = require(ReplicatedStorage.Packages.Junction)
+local Junky = require(ReplicatedStorage.Packages.Junky)
 local Shared = ReplicatedStorage.Shared
 
-Junction.Ignite({
+local app = Junky.Configure({
 	Junction = require(Shared.Junction),
 	Manifest = require(Shared.Manifest),
 	ClassPriority = require(Shared.ClassPriorityMap),
 	StandalonePriority = require(Shared.StandalonePriorityMap),
 
-	-- Managers live here; shared Services live in ReplicatedStorage. Junction
+	-- Managers live here; shared Services live in ReplicatedStorage. Junky
 	-- side-filters automatically (Managers boot on the server, Controllers do not).
 	Modules = {
 		ServerScriptService.Modules,
@@ -26,4 +26,5 @@ Junction.Ignite({
 	},
 })
 
-print("[ServerBootstrap] Junction ignited (Server)")
+print("[ServerBootstrap] Junky configured (Server)")
+-- print(app:Inspect()) -- uncomment to dump the live routing topology

@@ -1,0 +1,1514 @@
+-- Junky scaffold
+-- Auto-generated from src/ -- regenerate after any src/ edit; this is a snapshot, not live-synced.
+-- Run in Roblox Studio's Command Bar to build the full Junky ModuleScript tree under ReplicatedStorage.
+-- (Junky also needs Substance present -- run CreateSubstance, or install both via Wally.)
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local existing = ReplicatedStorage:FindFirstChild("Junky")
+if existing then
+	existing:Destroy()
+end
+
+local n_Junky = Instance.new("ModuleScript")
+n_Junky.Name = "Junky"
+n_Junky.Source = [====[
+-- Junky
+-- init.lua
+-- Plinko Labs
+--
+-- SSJA -- Single Script Junction Architecture.
+--
+-- One Bootstrap owns the lifecycle, one Junction map defines the routing topology,
+-- one Context is the only surface modules talk through. Modules (Controllers,
+-- Managers, Services) never require one another -- they Post, Request and Subscribe.
+--
+-- Usage (one Bootstrap script per side):
+--
+--   local Junky = require(ReplicatedStorage.Packages.Junky)
+--
+--   local app = Junky.Configure({
+--       Junction = require(Shared.Junction),       -- the routing map
+--       Manifest = require(Shared.Manifest),       -- read-only config
+--       Modules = { ServerScriptService.Modules, Shared.Services },
+--       ClassPriority = require(Shared.ClassPriorityMap),
+--       StandalonePriority = require(Shared.StandalonePriorityMap),
+--   })
+--
+--   -- app:Inspect()  -> live topology snapshot
+--   -- app:Stop()     -> teardown (rare; mostly for tests / soft restarts)
+--
+-- Junky detects the side from RunService, finds Substance automatically, validates
+-- the Junction, runs every :Init then every :Start in priority order, and injects a
+-- Context into each.
+
+local Bootstrap = require(script.Bootstrap)
+local Reaction = require(script.Reaction)
+local Types = require(script.Types)
+
+export type Context = Types.Context
+export type Config = Types.Config
+export type App = Types.App
+export type JunctionMap = Types.JunctionMap
+export type Subscription = Types.Subscription
+export type Reaction = Types.Reaction
+
+local Junky = {}
+
+-- The Await/Request handle type, exposed for code that constructs reactions directly.
+Junky.Reaction = Reaction
+
+-- The app from the most recent Configure on this side. Lets diagnostics call
+-- Junky.Inspect() without threading the handle around.
+local active = nil
+
+local function resolveSubstance(explicit: any): any
+	if explicit then
+		return explicit
+	end
+
+	local candidates = {}
+	if script.Parent then
+		table.insert(candidates, script.Parent:FindFirstChild("Substance"))
+	end
+
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local packagesFolder = ReplicatedStorage:FindFirstChild("Packages")
+	if packagesFolder then
+		table.insert(candidates, packagesFolder:FindFirstChild("Substance"))
+	end
+	table.insert(candidates, ReplicatedStorage:FindFirstChild("Substance"))
+
+	for _, candidate in candidates do
+		if candidate then
+			return require(candidate)
+		end
+	end
+
+	error(
+		"[Junky] could not locate Substance. Install ker/substance, or pass it explicitly: "
+			.. "Junky.Configure({ Substance = require(path.to.Substance), ... })"
+	)
+end
+
+-- Configures and boots this side. Call exactly once per side. Returns the app
+-- handle (:Inspect, :Stop, .Context, .Modules).
+function Junky.Configure(config: Types.Config): Types.App
+	local substance = resolveSubstance(config and config.Substance)
+	active = Bootstrap.Boot(config, substance)
+	return active
+end
+
+-- The live routing topology of the active app, or nil if Configure hasn't run.
+function Junky.Inspect()
+	return if active then active:Inspect() else nil
+end
+
+return Junky
+]====]
+
+local n_Bootstrap = Instance.new("ModuleScript")
+n_Bootstrap.Name = "Bootstrap"
+n_Bootstrap.Source = [====[
+-- Junky
+-- Bootstrap.lua
+-- Plinko Labs
+--
+-- The single entry point for a side. Bootstrap:
+--   1. stands up the Router + Network (the transport),
+--   2. builds the shared runtime (Packages, Utilities, frozen Manifest),
+--   3. discovers module scripts and classifies them by name suffix,
+--   4. filters by side (Controllers -> client, Managers -> server, Services -> both),
+--   5. validates the Junction against what it found,
+--   6. runs every :Init in priority order, then every :Start in priority order,
+--   7. returns a handle with :Inspect() and :Stop().
+--
+-- Two phases (Init then Start) mean a module can wire up subscribers/responders in
+-- :Init and be sure every other module's wiring exists before any :Start fires --
+-- which removes most boot-order races without reaching for Await.
+
+local RunService = game:GetService("RunService")
+
+local Router = require(script.Parent.Router)
+local Network = require(script.Parent.Network)
+local Context = require(script.Parent.Context)
+local Priority = require(script.Parent.Priority)
+
+local Bootstrap = {}
+
+local RESERVED = {
+	NetworkController = true,
+	NetworkManager = true,
+}
+
+local function classify(name: string): string?
+	if name:match("Controller$") then
+		return "Controller"
+	elseif name:match("Manager$") then
+		return "Manager"
+	elseif name:match("Service$") then
+		return "Service"
+	end
+	return nil
+end
+
+local function deepFreeze(value: any): any
+	if type(value) ~= "table" or table.isfrozen(value) then
+		return value
+	end
+	for _, child in value do
+		deepFreeze(child)
+	end
+	table.freeze(value)
+	return value
+end
+
+local function collectModuleScripts(roots: { Instance }): { ModuleScript }
+	local found = {}
+	local seen = {}
+
+	local function add(instance: Instance)
+		if instance:IsA("ModuleScript") and not seen[instance] then
+			seen[instance] = true
+			table.insert(found, instance)
+		end
+	end
+
+	for _, root in roots do
+		add(root)
+		for _, descendant in root:GetDescendants() do
+			add(descendant)
+		end
+	end
+
+	return found
+end
+
+-- Warn about Local destinations that name no module on this side (a likely typo).
+-- Network destinations live on the other side, so they cannot be checked here.
+local function validateJunction(junctionMap, present, side: string)
+	local localMap = junctionMap.Local
+	if not localMap then
+		return
+	end
+	for domain, byDomain in localMap do
+		for name, entry in byDomain do
+			local destination = entry.Destination
+			if destination and not present[destination] then
+				warn(("[Junky] Local %s.%s routes to '%s', which is not a module on the %s side")
+					:format(domain, name, destination, side))
+			end
+		end
+	end
+end
+
+function Bootstrap.Boot(config, substance)
+	assert(config and config.Junction, "[Junky] Configure requires config.Junction")
+
+	local side = config.Side or (RunService:IsServer() and "Server" or "Client")
+
+	local router = Router.new(config.Junction, side)
+	local network = Network.new(router, side, substance)
+	router:SetNetwork(network)
+	network:Start()
+
+	-- shared runtime ------------------------------------------------------
+	local packages = {}
+	if config.Packages then
+		for name, value in config.Packages do
+			packages[name] = value
+		end
+	end
+	if config.Manifest ~= nil then
+		packages.Manifest = deepFreeze(config.Manifest)
+	end
+
+	local instances = {} -- [name] = module table
+	local kinds = {} -- [name] = "Controller" | "Manager" | "Service"
+
+	local runtime = {
+		Side = side,
+		Router = router,
+		Network = network,
+		Packages = packages,
+		Utilities = config.Utilities or {},
+		Modules = instances,
+	}
+
+	-- discover + classify + side-filter -----------------------------------
+	local roots: { Instance }
+	if config.Modules == nil then
+		roots = {}
+	elseif typeof(config.Modules) == "Instance" then
+		roots = { config.Modules }
+	else
+		roots = config.Modules
+	end
+
+	for _, moduleScript in collectModuleScripts(roots) do
+		local name = moduleScript.Name
+
+		if RESERVED[name] then
+			warn(("[Junky] '%s' is built into Junky and is ignored as a user module"):format(name))
+			continue
+		end
+
+		local kind = classify(name)
+		if not kind then
+			continue
+		end
+		if kind == "Controller" and side ~= "Client" then
+			continue
+		end
+		if kind == "Manager" and side ~= "Server" then
+			continue
+		end
+		if instances[name] then
+			warn(("[Junky] duplicate module name '%s' -- the second one is ignored"):format(name))
+			continue
+		end
+
+		local ok, result = pcall(require, moduleScript)
+		if not ok then
+			warn(("[Junky] failed to require '%s': %s"):format(name, tostring(result)))
+			continue
+		end
+
+		instances[name] = result
+		kinds[name] = kind
+	end
+
+	-- order ---------------------------------------------------------------
+	local present = {}
+	for name in instances do
+		present[name] = true
+	end
+
+	validateJunction(config.Junction, present, side)
+
+	local order, unprioritized = Priority.Order(config.ClassPriority, config.StandalonePriority, present)
+	for _, name in unprioritized do
+		warn(("[Junky] %s has no entry in any priority map -- booting it last"):format(name))
+	end
+
+	-- one Context per module ----------------------------------------------
+	local contexts = {}
+	for _, name in order do
+		contexts[name] = Context.new(name, runtime)
+	end
+
+	-- phase 1: Init (optional on every kind) ------------------------------
+	for _, name in order do
+		local moduleTable = instances[name]
+		if type(moduleTable) == "table" and type(moduleTable.Init) == "function" then
+			local ok, err = pcall(moduleTable.Init, moduleTable, contexts[name])
+			if not ok then
+				warn(("[Junky] %s:Init() errored: %s"):format(name, tostring(err)))
+			end
+		end
+	end
+
+	-- phase 2: Start (required for Controllers/Managers) ------------------
+	for _, name in order do
+		local moduleTable = instances[name]
+		local kind = kinds[name]
+		if type(moduleTable) == "table" and type(moduleTable.Start) == "function" then
+			local ok, err = pcall(moduleTable.Start, moduleTable, contexts[name])
+			if not ok then
+				warn(("[Junky] %s:Start() errored: %s"):format(name, tostring(err)))
+			end
+		elseif kind ~= "Service" and type(moduleTable) == "table" and type(moduleTable.Init) ~= "function" then
+			warn(("[Junky] %s is a %s and must implement :Start() (or :Init())"):format(name, kind))
+		end
+	end
+
+	-- handle --------------------------------------------------------------
+	local stopped = false
+	local handle = {
+		Side = side,
+		Router = router,
+		Network = network,
+		Modules = instances,
+		Context = Context.new("Junky", runtime),
+	}
+
+	function handle:Inspect()
+		return router:Inspect()
+	end
+
+	-- Tear down in reverse boot order: :Stop each module, then drop its routing
+	-- entries and run its OnCleanup callbacks.
+	function handle:Stop()
+		if stopped then
+			return
+		end
+		stopped = true
+		for index = #order, 1, -1 do
+			local name = order[index]
+			local moduleTable = instances[name]
+			if type(moduleTable) == "table" and type(moduleTable.Stop) == "function" then
+				local ok, err = pcall(moduleTable.Stop, moduleTable)
+				if not ok then
+					warn(("[Junky] %s:Stop() errored: %s"):format(name, tostring(err)))
+				end
+			end
+			contexts[name]:_teardown()
+		end
+	end
+
+	return handle
+end
+
+return Bootstrap
+]====]
+n_Bootstrap.Parent = n_Junky
+
+local n_Context = Instance.new("ModuleScript")
+n_Context.Name = "Context"
+n_Context.Source = [====[
+-- Junky
+-- Context.lua
+-- Plinko Labs
+--
+-- The only surface a module talks through. Bootstrap builds one Context per module,
+-- bound to that module's name as `Source`, so Junction Dynamic(source) resolvers
+-- know who is posting without the caller passing it.
+--
+-- Surface:
+--   Post / Subscribe / Once            -- fire-and-forget
+--   Request / Respond                  -- request/response (returns a Reaction)
+--   Guard                              -- veto predicate on an event
+--   Await                              -- one-shot latch on "Domain.Name"
+--   GetPackage / GetUtility / GetService
+--   OnCleanup                          -- run on module teardown (handle:Stop)
+--   Inspect                            -- live topology snapshot
+--   Network(domain) / Local(domain)    -- scoped shorthands
+
+local Context = {}
+Context.__index = Context
+
+local NetworkScope = {}
+NetworkScope.__index = NetworkScope
+
+local LocalScope = {}
+LocalScope.__index = LocalScope
+
+function Context.new(source: string, runtime)
+	local self = setmetatable({}, Context)
+	self.Source = source
+	self.Side = runtime.Side
+	self._runtime = runtime
+	self._networkScopes = {}
+	self._localScopes = {}
+	self._cleanups = {}
+	return self
+end
+
+-- generic (namespace-explicit) surface -------------------------------------
+
+function Context:Post(namespace: string, domain: string, name: string, ...)
+	local router = self._runtime.Router
+	if namespace == "Local" then
+		router:PostLocal(self.Source, domain, name, ...)
+	elseif namespace == "Network" then
+		router:PostNetwork(self.Source, domain, name, nil, ...)
+	else
+		error(("[Junky] unknown namespace '%s' (expected 'Network' or 'Local')"):format(tostring(namespace)))
+	end
+end
+
+function Context:Subscribe(namespace: string, domain: string, name: string, handler: (...any) -> ())
+	return self._runtime.Router:Subscribe(self.Source, namespace, domain, name, handler)
+end
+
+function Context:Once(namespace: string, domain: string, name: string, handler: (...any) -> ())
+	local subscription
+	subscription = self._runtime.Router:Subscribe(self.Source, namespace, domain, name, function(...)
+		subscription.Cancel()
+		handler(...)
+	end)
+	return subscription
+end
+
+function Context:Request(namespace: string, domain: string, name: string, ...)
+	local router = self._runtime.Router
+	if namespace == "Local" then
+		return router:RequestLocal(self.Source, domain, name, ...)
+	elseif namespace == "Network" then
+		return router:RequestNetwork(self.Source, domain, name, nil, ...)
+	end
+	error(("[Junky] unknown namespace '%s'"):format(tostring(namespace)))
+end
+
+function Context:Respond(namespace: string, domain: string, name: string, handler: (...any) -> any)
+	return self._runtime.Router:Respond(self.Source, namespace, domain, name, handler)
+end
+
+function Context:Guard(namespace: string, domain: string, name: string, predicate: (...any) -> boolean)
+	return self._runtime.Router:Guard(self.Source, namespace, domain, name, predicate)
+end
+
+function Context:Await(key: string)
+	return self._runtime.Router:Await(key)
+end
+
+-- packages / services ------------------------------------------------------
+
+function Context:GetPackage(name: string): any
+	return self._runtime.Packages[name]
+end
+
+function Context:GetUtility(name: string): any
+	return self._runtime.Utilities[name]
+end
+
+-- The one sanctioned direct call in SSJA: a Manager reaching its own domain
+-- Service. Everything else should go through Post / Request / Subscribe.
+function Context:GetService(name: string): any
+	return self._runtime.Modules[name]
+end
+
+-- lifecycle / diagnostics --------------------------------------------------
+
+function Context:OnCleanup(fn: () -> ())
+	table.insert(self._cleanups, fn)
+end
+
+function Context:Inspect()
+	return self._runtime.Router:Inspect()
+end
+
+-- Internal: run by Bootstrap's handle:Stop.
+function Context:_teardown()
+	for _, fn in self._cleanups do
+		task.spawn(fn)
+	end
+	table.clear(self._cleanups)
+	self._runtime.Router:CancelOwner(self.Source)
+end
+
+-- scoped shorthands --------------------------------------------------------
+
+function Context:Network(domain: string)
+	local scope = self._networkScopes[domain]
+	if not scope then
+		scope = setmetatable({ _ctx = self, _domain = domain }, NetworkScope)
+		self._networkScopes[domain] = scope
+	end
+	return scope
+end
+
+function Context:Local(domain: string)
+	local scope = self._localScopes[domain]
+	if not scope then
+		scope = setmetatable({ _ctx = self, _domain = domain }, LocalScope)
+		self._localScopes[domain] = scope
+	end
+	return scope
+end
+
+-- Network scope: on the client :Post/:Request go to the server; on the server
+-- :Post/:Broadcast fire to all clients and :PostTo/:RequestFrom target one.
+
+function NetworkScope:Post(name: string, ...)
+	local ctx = self._ctx
+	ctx._runtime.Router:PostNetwork(ctx.Source, self._domain, name, nil, ...)
+end
+
+function NetworkScope:PostTo(target: Player, name: string, ...)
+	local ctx = self._ctx
+	assert(ctx.Side == "Server", "[Junky] Network:PostTo can only be called on the server")
+	ctx._runtime.Router:PostNetwork(ctx.Source, self._domain, name, target, ...)
+end
+
+function NetworkScope:Broadcast(name: string, ...)
+	local ctx = self._ctx
+	assert(ctx.Side == "Server", "[Junky] Network:Broadcast can only be called on the server")
+	ctx._runtime.Router:PostNetwork(ctx.Source, self._domain, name, nil, ...)
+end
+
+function NetworkScope:Request(name: string, ...)
+	local ctx = self._ctx
+	return ctx._runtime.Router:RequestNetwork(ctx.Source, self._domain, name, nil, ...)
+end
+
+function NetworkScope:RequestFrom(target: Player, name: string, ...)
+	local ctx = self._ctx
+	assert(ctx.Side == "Server", "[Junky] Network:RequestFrom can only be called on the server")
+	return ctx._runtime.Router:RequestNetwork(ctx.Source, self._domain, name, target, ...)
+end
+
+function NetworkScope:Subscribe(name: string, handler: (...any) -> ())
+	local ctx = self._ctx
+	return ctx._runtime.Router:Subscribe(ctx.Source, "Network", self._domain, name, handler)
+end
+
+function NetworkScope:Once(name: string, handler: (...any) -> ())
+	return self._ctx:Once("Network", self._domain, name, handler)
+end
+
+function NetworkScope:Respond(name: string, handler: (...any) -> any)
+	local ctx = self._ctx
+	return ctx._runtime.Router:Respond(ctx.Source, "Network", self._domain, name, handler)
+end
+
+function NetworkScope:Guard(name: string, predicate: (...any) -> boolean)
+	local ctx = self._ctx
+	return ctx._runtime.Router:Guard(ctx.Source, "Network", self._domain, name, predicate)
+end
+
+-- Local scope --------------------------------------------------------------
+
+function LocalScope:Post(name: string, ...)
+	local ctx = self._ctx
+	ctx._runtime.Router:PostLocal(ctx.Source, self._domain, name, ...)
+end
+
+function LocalScope:Subscribe(name: string, handler: (...any) -> ())
+	local ctx = self._ctx
+	return ctx._runtime.Router:Subscribe(ctx.Source, "Local", self._domain, name, handler)
+end
+
+function LocalScope:Once(name: string, handler: (...any) -> ())
+	return self._ctx:Once("Local", self._domain, name, handler)
+end
+
+function LocalScope:Request(name: string, ...)
+	local ctx = self._ctx
+	return ctx._runtime.Router:RequestLocal(ctx.Source, self._domain, name, ...)
+end
+
+function LocalScope:Respond(name: string, handler: (...any) -> any)
+	local ctx = self._ctx
+	return ctx._runtime.Router:Respond(ctx.Source, "Local", self._domain, name, handler)
+end
+
+function LocalScope:Guard(name: string, predicate: (...any) -> boolean)
+	local ctx = self._ctx
+	return ctx._runtime.Router:Guard(ctx.Source, "Local", self._domain, name, predicate)
+end
+
+return Context
+]====]
+n_Context.Parent = n_Junky
+
+local n_Network = Instance.new("ModuleScript")
+n_Network.Name = "Network"
+n_Network.Source = [====[
+-- Junky
+-- Network.lua
+-- Plinko Labs
+--
+-- The only part of Junky that touches the wire (the NetworkController /
+-- NetworkManager role). Backed by Substance with two channels:
+--
+--   * "JunkyBus"   (Strict / RemoteEvent)    -- fire-and-forget Post.
+--   * "JunkySolve" (Solve  / RemoteFunction)  -- Request/Response.
+--
+-- Both carry the same typed envelope:
+--   d  = domain   n = name   to = destination ("" if none)   a = packed args
+--
+-- Direction is handled by Substance: a client send fires/invokes the server; a
+-- server send with no target fires all clients; a server send with a target hits
+-- that one client. On arrival the envelope is unpacked and handed to the Router --
+-- Deliver for Signals, Answer (which returns a value) for Solves.
+
+local Reaction = require(script.Parent.Reaction)
+
+local Network = {}
+Network.__index = Network
+
+local SIGNAL_CHANNEL = "JunkyBus"
+local SOLVE_CHANNEL = "JunkySolve"
+
+function Network.new(router, side: string, substance)
+	local self = setmetatable({}, Network)
+	self.Router = router
+	self.Side = side
+	self.Substance = substance
+	self._signal = nil
+	self._solve = nil
+	return self
+end
+
+function Network:Start()
+	local Substance = self.Substance
+	local Type = Substance.Type
+
+	local function envelopeAtom(name: string)
+		return Substance.Define(name, {
+			d = Type.string(),
+			n = Type.string(),
+			to = Type.string(),
+			a = Type.array(Type.any()),
+		})
+	end
+
+	-- fire-and-forget channel
+	local signal = envelopeAtom("JunkySignalEnvelope")
+	signal:Compose(SIGNAL_CHANNEL, "Strict")
+	signal:Subscribe(function(envelope, player)
+		self:_onSignal(envelope, player)
+	end)
+	self._signal = signal
+
+	-- request/response channel
+	local solve = envelopeAtom("JunkySolveEnvelope")
+	solve:Compose(SOLVE_CHANNEL, "Solve")
+	solve:Subscribe(function(envelope, player)
+		return self:_onSolve(envelope, player)
+	end)
+	self._solve = solve
+end
+
+local function pack(domain, name, destination, packed)
+	local arr = table.move(packed, 1, packed.n, 1, table.create(packed.n))
+	return {
+		d = domain,
+		n = name,
+		to = destination or "",
+		a = arr,
+	}
+end
+
+local function unpackArgs(envelope)
+	return table.pack(table.unpack(envelope.a))
+end
+
+local function destOf(envelope): string?
+	return if envelope.to ~= "" then envelope.to else nil
+end
+
+-- Post: fire-and-forget. Substance returns a Reaction we intentionally drop.
+function Network:Send(domain: string, name: string, destination: string?, target: Player?, packed)
+	self._signal:Post(pack(domain, name, destination, packed), target)
+end
+
+-- Request: returns a Junky Reaction resolved with the responder's value.
+function Network:Request(domain: string, name: string, destination: string?, target: Player?, packed)
+	local reaction = Reaction.new()
+	local solveReaction = self._solve:Post(pack(domain, name, destination, packed), target)
+
+	-- Substance's Solve Post yields the RemoteFunction return through its own
+	-- Reaction; bridge it onto ours so callers always get the Junky surface.
+	solveReaction:Next(function(response)
+		reaction:Resolve(response)
+	end)
+	solveReaction:Throw(function(err)
+		reaction:Reject(err)
+	end)
+
+	return reaction
+end
+
+function Network:_onSignal(envelope, player: Player?)
+	self.Router:Receive(envelope.d, envelope.n, destOf(envelope), unpackArgs(envelope), player)
+end
+
+function Network:_onSolve(envelope, player: Player?): any
+	return self.Router:Answer(envelope.d, envelope.n, destOf(envelope), unpackArgs(envelope), player)
+end
+
+return Network
+]====]
+n_Network.Parent = n_Junky
+
+local n_Priority = Instance.new("ModuleScript")
+n_Priority.Name = "Priority"
+n_Priority.Source = [====[
+-- Junky
+-- Priority.lua
+-- Plinko Labs
+--
+-- Resolves the two priority maps into one flat boot order:
+--
+--   1. ClassPriorityMap     -- tier-based, ascending tier number. Controllers and
+--                              Managers. Order within a tier is not guaranteed.
+--   2. StandalonePriorityMap -- numeric, ascending. Services.
+--
+-- Class modules boot before Services; cross-group timing dependencies are meant to
+-- be handled with Context:Await rather than by reordering. Any discovered module
+-- absent from both maps is appended last so nothing is silently dropped.
+
+local Priority = {}
+
+function Priority.Order(
+	classMap: { [number]: { string } }?,
+	standaloneMap: { [string]: number }?,
+	present: { [string]: boolean }
+): ({ string }, { string })
+	local ordered = {}
+	local seen = {}
+	local unprioritized = {}
+
+	if classMap then
+		local tiers = {}
+		for tier in classMap do
+			table.insert(tiers, tier)
+		end
+		table.sort(tiers)
+
+		for _, tier in tiers do
+			for _, name in classMap[tier] do
+				if present[name] and not seen[name] then
+					seen[name] = true
+					table.insert(ordered, name)
+				end
+			end
+		end
+	end
+
+	if standaloneMap then
+		local services = {}
+		for name, priority in standaloneMap do
+			if present[name] and not seen[name] then
+				table.insert(services, { name = name, priority = priority })
+			end
+		end
+		table.sort(services, function(a, b)
+			return a.priority < b.priority
+		end)
+
+		for _, item in services do
+			seen[item.name] = true
+			table.insert(ordered, item.name)
+		end
+	end
+
+	for name in present do
+		if not seen[name] then
+			seen[name] = true
+			table.insert(ordered, name)
+			table.insert(unprioritized, name)
+		end
+	end
+
+	return ordered, unprioritized
+end
+
+return Priority
+]====]
+n_Priority.Parent = n_Junky
+
+local n_Reaction = Instance.new("ModuleScript")
+n_Reaction.Name = "Reaction"
+n_Reaction.Source = [====[
+-- Junky
+-- Reaction.lua
+-- Plinko Labs
+--
+-- The async handle returned by Context:Await and Context:Request. It is a deferred
+-- resolved externally (by the Router when a key fires, or by a request response).
+-- Its method surface mirrors Substance's Reaction so the two are interchangeable
+-- at call sites: :Next / :Throw / :Catch / :Conclusion / :Map / :Timeout / :Await /
+-- :Cancel.
+
+local Reaction = {}
+Reaction.__index = Reaction
+
+type State = "Pending" | "Resolved" | "Rejected" | "Cancelled"
+
+export type Reaction = {
+	Next: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Throw: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Catch: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Conclusion: (self: Reaction, fn: () -> ()) -> Reaction,
+	Map: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Timeout: (self: Reaction, seconds: number) -> Reaction,
+	Await: (self: Reaction) -> any,
+	Cancel: (self: Reaction) -> (),
+}
+
+function Reaction.new(): Reaction
+	local self = setmetatable({}, Reaction)
+	self._state = "Pending" :: State
+	self._value = nil :: any
+	self._next = {}
+	self._throw = {}
+	self._finally = {}
+	return (self :: any) :: Reaction
+end
+
+-- A reaction that is already resolved with `value`. Used for cached/latched paths.
+function Reaction.resolved(value: any): Reaction
+	local reaction = Reaction.new()
+	reaction:Resolve(value)
+	return reaction
+end
+
+function Reaction:_settle(state: State, value: any)
+	if self._state ~= "Pending" then
+		return
+	end
+	self._state = state
+	self._value = value
+
+	local handlers = if state == "Resolved" then self._next else self._throw
+	for _, fn in handlers do
+		task.spawn(fn, value)
+	end
+	for _, fn in self._finally do
+		task.spawn(fn)
+	end
+
+	table.clear(self._next)
+	table.clear(self._throw)
+	table.clear(self._finally)
+end
+
+-- Resolve / Reject are driven by the framework (Router, Network). Left unprefixed
+-- so the runtime can settle a reaction it handed out.
+function Reaction:Resolve(value: any)
+	self:_settle("Resolved", value)
+end
+
+function Reaction:Reject(reason: any)
+	self:_settle("Rejected", reason)
+end
+
+function Reaction:Next(fn: (any) -> any): Reaction
+	if self._state == "Resolved" then
+		task.spawn(fn, self._value)
+	elseif self._state == "Pending" then
+		table.insert(self._next, fn)
+	end
+	return self
+end
+
+function Reaction:Throw(fn: (any) -> any): Reaction
+	if self._state == "Rejected" then
+		task.spawn(fn, self._value)
+	elseif self._state == "Pending" then
+		table.insert(self._throw, fn)
+	end
+	return self
+end
+
+function Reaction:Catch(fn: (any) -> any): Reaction
+	return self:Throw(fn)
+end
+
+function Reaction:Conclusion(fn: () -> ()): Reaction
+	if self._state ~= "Pending" then
+		task.spawn(fn)
+	else
+		table.insert(self._finally, fn)
+	end
+	return self
+end
+
+-- Transform the resolved value into a new Reaction. Errors in `fn` reject the child.
+function Reaction:Map(fn: (any) -> any): Reaction
+	local child = Reaction.new()
+	self:Next(function(value)
+		local ok, result = pcall(fn, value)
+		if ok then
+			child:Resolve(result)
+		else
+			child:Reject(result)
+		end
+	end)
+	self:Throw(function(reason)
+		child:Reject(reason)
+	end)
+	return child
+end
+
+-- Reject with "timeout" if still pending after `seconds`.
+function Reaction:Timeout(seconds: number): Reaction
+	task.delay(seconds, function()
+		if self._state == "Pending" then
+			self:Reject("timeout")
+		end
+	end)
+	return self
+end
+
+function Reaction:Await(): any
+	while self._state == "Pending" do
+		task.wait()
+	end
+	if self._state == "Resolved" then
+		return self._value
+	end
+	error(self._value, 0)
+end
+
+function Reaction:Cancel()
+	self:_settle("Cancelled", "cancelled")
+end
+
+return Reaction
+]====]
+n_Reaction.Parent = n_Junky
+
+local n_Router = Instance.new("ModuleScript")
+n_Router.Name = "Router"
+n_Router.Source = [====[
+-- Junky
+-- Router.lua
+-- Plinko Labs
+--
+-- The in-process engine behind Context. It owns:
+--
+--   1. The Junction map        -- the static topology of where every event goes.
+--   2. The subscriber registry -- who listens, tagged by owning module.
+--   3. The responder registry  -- who answers Requests (one responder per event).
+--   4. The guard registry      -- veto predicates that gate a Post/Request.
+--   5. The Await registry       -- one-shot latches keyed by "Domain.Name".
+--
+-- Posting resolves a Junction entry to a destination (Dynamic(source) beats
+-- Destination), runs guards, then delivers in-process (Local) or hands to Network
+-- (Network). Delivery is destination-filtered: only subscribers owned by the
+-- resolved destination receive the event -- a subscriber cannot receive an event
+-- the Junction did not route to it.
+
+local Reaction = require(script.Parent.Reaction)
+
+local Router = {}
+Router.__index = Router
+
+type SubRecord = { Owner: string, Handler: (...any) -> () }
+type GuardRecord = { Owner: string, Predicate: (...any) -> boolean }
+type Responder = { Owner: string, Handler: (...any) -> any }
+
+function Router.new(junctionMap, side: string)
+	local self = setmetatable({}, Router)
+	self.Junction = junctionMap or {}
+	self.Side = side
+	self._subscribers = {} -- [ns][domain][name] = { SubRecord, ... }
+	self._responders = {} -- [ns][domain][name] = Responder
+	self._guards = {} -- [ns][domain][name] = { GuardRecord, ... }
+	self._awaitLatch = {} -- [key] = { value } ; presence means latched
+	self._awaitWaiters = {} -- [key] = { Reaction, ... }
+	self._network = nil
+	return self
+end
+
+function Router:SetNetwork(network)
+	self._network = network
+end
+
+-- nested-table helpers -----------------------------------------------------
+
+local function reach(root, ns: string, domain: string, name: string, create: boolean)
+	local nsT = root[ns]
+	if not nsT then
+		if not create then
+			return nil
+		end
+		nsT = {}
+		root[ns] = nsT
+	end
+	local dT = nsT[domain]
+	if not dT then
+		if not create then
+			return nil
+		end
+		dT = {}
+		nsT[domain] = dT
+	end
+	return dT
+end
+
+-- Junction resolution ------------------------------------------------------
+
+function Router:_entry(ns: string, domain: string, name: string)
+	local dT = reach(self.Junction, ns, domain, name, false)
+	return dT and dT[name]
+end
+
+function Router:_resolveDestination(entry, source: string): string?
+	if not entry then
+		return nil
+	end
+	if entry.Dynamic then
+		local resolved = entry.Dynamic(source)
+		if resolved then
+			return resolved
+		end
+	end
+	return entry.Destination
+end
+
+-- guards -------------------------------------------------------------------
+
+function Router:Guard(owner: string, ns: string, domain: string, name: string, predicate: (...any) -> boolean)
+	local dT = reach(self._guards, ns, domain, name, true)
+	local list = dT[name]
+	if not list then
+		list = {}
+		dT[name] = list
+	end
+	local record: GuardRecord = { Owner = owner, Predicate = predicate }
+	table.insert(list, record)
+	return {
+		Cancel = function()
+			local index = table.find(list, record)
+			if index then
+				table.remove(list, index)
+			end
+		end,
+	}
+end
+
+function Router:_passesGuards(ns: string, domain: string, name: string, packed): boolean
+	local dT = reach(self._guards, ns, domain, name, false)
+	local list = dT and dT[name]
+	if not list then
+		return true
+	end
+	for _, record in table.clone(list) do
+		local ok, allowed = pcall(record.Predicate, table.unpack(packed, 1, packed.n))
+		if not ok then
+			warn(("[Junky] guard on %s.%s.%s (%s) errored: %s"):format(ns, domain, name, record.Owner, tostring(allowed)))
+			return false
+		end
+		if allowed == false then
+			return false
+		end
+	end
+	return true
+end
+
+-- Await --------------------------------------------------------------------
+
+function Router:_signalAwait(domain: string, name: string, value: any)
+	local key = domain .. "." .. name
+
+	if self._awaitLatch[key] == nil then
+		self._awaitLatch[key] = { value }
+	end
+
+	local waiters = self._awaitWaiters[key]
+	if waiters then
+		self._awaitWaiters[key] = nil
+		for _, reaction in waiters do
+			reaction:Resolve(value)
+		end
+	end
+end
+
+function Router:Await(key: string)
+	local latched = self._awaitLatch[key]
+	if latched then
+		return Reaction.resolved(latched[1])
+	end
+
+	local reaction = Reaction.new()
+	local waiters = self._awaitWaiters[key]
+	if not waiters then
+		waiters = {}
+		self._awaitWaiters[key] = waiters
+	end
+	table.insert(waiters, reaction)
+	return reaction
+end
+
+-- subscribe / deliver ------------------------------------------------------
+
+function Router:Subscribe(owner: string, ns: string, domain: string, name: string, handler: (...any) -> ())
+	local dT = reach(self._subscribers, ns, domain, name, true)
+	local list = dT[name]
+	if not list then
+		list = {}
+		dT[name] = list
+	end
+	local record: SubRecord = { Owner = owner, Handler = handler }
+	table.insert(list, record)
+
+	return {
+		Cancel = function()
+			local index = table.find(list, record)
+			if index then
+				table.remove(list, index)
+			end
+		end,
+	}
+end
+
+local function fire(handler: (...any) -> (), packed, trailing: any)
+	if trailing == nil then
+		task.spawn(handler, table.unpack(packed, 1, packed.n))
+	else
+		local n = packed.n
+		local copy = table.move(packed, 1, n, 1, table.create(n + 1))
+		copy[n + 1] = trailing
+		task.spawn(handler, table.unpack(copy, 1, n + 1))
+	end
+end
+
+function Router:Deliver(ns: string, domain: string, name: string, destination: string?, packed, trailing: any)
+	self:_signalAwait(domain, name, packed[1])
+
+	local dT = reach(self._subscribers, ns, domain, name, false)
+	local list = dT and dT[name]
+	if not list then
+		return
+	end
+
+	for _, record in table.clone(list) do
+		if destination and record.Owner ~= destination then
+			continue
+		end
+		fire(record.Handler, packed, trailing)
+	end
+end
+
+-- responders ---------------------------------------------------------------
+
+function Router:Respond(owner: string, ns: string, domain: string, name: string, handler: (...any) -> any)
+	local dT = reach(self._responders, ns, domain, name, true)
+	if dT[name] then
+		warn(("[Junky] responder for %s.%s.%s replaced (was %s, now %s)"):format(ns, domain, name, dT[name].Owner, owner))
+	end
+	dT[name] = { Owner = owner, Handler = handler } :: Responder
+
+	return {
+		Cancel = function()
+			if dT[name] and dT[name].Owner == owner then
+				dT[name] = nil
+			end
+		end,
+	}
+end
+
+-- Invoke the responder for an event, honoring destination filtering. Returns the
+-- responder's value (or nil + an error string on failure).
+function Router:Invoke(ns: string, domain: string, name: string, destination: string?, packed, trailing: any): (any, string?)
+	local dT = reach(self._responders, ns, domain, name, false)
+	local responder = dT and dT[name]
+	if not responder then
+		return nil, ("no responder for %s.%s.%s"):format(ns, domain, name)
+	end
+	if destination and responder.Owner ~= destination then
+		return nil, ("%s.%s.%s routes to %s but its responder is owned by %s"):format(ns, domain, name, destination, responder.Owner)
+	end
+
+	local args
+	if trailing ~= nil then
+		local n = packed.n
+		args = table.move(packed, 1, n, 1, table.create(n + 1))
+		args[n + 1] = trailing
+		args.n = n + 1
+	else
+		args = packed
+	end
+
+	local ok, result = pcall(responder.Handler, table.unpack(args, 1, args.n))
+	if not ok then
+		return nil, tostring(result)
+	end
+	return result, nil
+end
+
+-- posting ------------------------------------------------------------------
+
+function Router:PostLocal(source: string, domain: string, name: string, ...)
+	local entry = self:_entry("Local", domain, name)
+	if not entry then
+		warn(("[Junky] no Local Junction entry for %s.%s (posted by %s)"):format(domain, name, source))
+	end
+
+	local packed = table.pack(...)
+	if not self:_passesGuards("Local", domain, name, packed) then
+		return
+	end
+
+	local destination = self:_resolveDestination(entry, source)
+	self:Deliver("Local", domain, name, destination, packed, nil)
+end
+
+function Router:PostNetwork(source: string, domain: string, name: string, target: Player?, ...)
+	local entry = self:_entry("Network", domain, name)
+	if not entry then
+		warn(("[Junky] no Network Junction entry for %s.%s (posted by %s)"):format(domain, name, source))
+	end
+
+	local packed = table.pack(...)
+	if not self:_passesGuards("Network", domain, name, packed) then
+		return
+	end
+
+	local destination = self:_resolveDestination(entry, source)
+
+	-- Same-side awaiters resolve at post time, in addition to the receiving side.
+	self:_signalAwait(domain, name, packed[1])
+
+	if self._network then
+		self._network:Send(domain, name, destination, target, packed)
+	end
+end
+
+-- requests -----------------------------------------------------------------
+
+function Router:RequestLocal(source: string, domain: string, name: string, ...)
+	local entry = self:_entry("Local", domain, name)
+	if not entry then
+		warn(("[Junky] no Local Junction entry for %s.%s (requested by %s)"):format(domain, name, source))
+	end
+	local packed = table.pack(...)
+
+	if not self:_passesGuards("Local", domain, name, packed) then
+		return Reaction.new() -- stays pending; the request was vetoed
+	end
+
+	local destination = self:_resolveDestination(entry, source)
+	local result, err = self:Invoke("Local", domain, name, destination, packed, nil)
+	if err then
+		local reaction = Reaction.new()
+		reaction:Reject(err)
+		return reaction
+	end
+	return Reaction.resolved(result)
+end
+
+function Router:RequestNetwork(source: string, domain: string, name: string, target: Player?, ...)
+	local entry = self:_entry("Network", domain, name)
+	if not entry then
+		warn(("[Junky] no Network Junction entry for %s.%s (requested by %s)"):format(domain, name, source))
+	end
+	local packed = table.pack(...)
+
+	if not self:_passesGuards("Network", domain, name, packed) then
+		return Reaction.new()
+	end
+
+	local destination = self:_resolveDestination(entry, source)
+	if not self._network then
+		local reaction = Reaction.new()
+		reaction:Reject("network unavailable")
+		return reaction
+	end
+	return self._network:Request(domain, name, destination, target, packed)
+end
+
+-- Called by Network when a Signal envelope arrives from the other side.
+function Router:Receive(domain: string, name: string, destination: string?, packed, sender: Player?)
+	self:Deliver("Network", domain, name, destination, packed, sender)
+end
+
+-- Called by Network when a Solve (request) envelope arrives. Returns the response.
+function Router:Answer(domain: string, name: string, destination: string?, packed, sender: Player?): any
+	local result, err = self:Invoke("Network", domain, name, destination, packed, sender)
+	if err then
+		warn(("[Junky] request %s.%s could not be answered: %s"):format(domain, name, err))
+		return nil
+	end
+	return result
+end
+
+-- lifecycle / introspection ------------------------------------------------
+
+-- Remove every subscriber, responder and guard owned by a module. Used by
+-- handle:Stop and module teardown.
+function Router:CancelOwner(owner: string)
+	for _, byNs in self._subscribers do
+		for _, byDomain in byNs do
+			for _, list in byDomain do
+				for index = #list, 1, -1 do
+					if list[index].Owner == owner then
+						table.remove(list, index)
+					end
+				end
+			end
+		end
+	end
+	for _, byNs in self._responders do
+		for _, byDomain in byNs do
+			for name, responder in byDomain do
+				if responder.Owner == owner then
+					byDomain[name] = nil
+				end
+			end
+		end
+	end
+	for _, byNs in self._guards do
+		for _, byDomain in byNs do
+			for _, list in byDomain do
+				for index = #list, 1, -1 do
+					if list[index].Owner == owner then
+						table.remove(list, index)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- A snapshot of the live routing topology, for diagnostics.
+function Router:Inspect()
+	local function flatten(root, valueFn)
+		local out = {}
+		for ns, byNs in root do
+			for domain, byDomain in byNs do
+				for name, value in byDomain do
+					out[("%s.%s.%s"):format(ns, domain, name)] = valueFn(value)
+				end
+			end
+		end
+		return out
+	end
+
+	local subscribers = flatten(self._subscribers, function(list)
+		local owners = {}
+		for _, record in list do
+			table.insert(owners, record.Owner)
+		end
+		return owners
+	end)
+
+	local responders = flatten(self._responders, function(responder)
+		return responder.Owner
+	end)
+
+	local guards = flatten(self._guards, function(list)
+		return #list
+	end)
+
+	local latched = {}
+	for key in self._awaitLatch do
+		table.insert(latched, key)
+	end
+
+	return {
+		Side = self.Side,
+		Subscribers = subscribers,
+		Responders = responders,
+		Guards = guards,
+		AwaitLatched = latched,
+	}
+end
+
+return Router
+]====]
+n_Router.Parent = n_Junky
+
+local n_Types = Instance.new("ModuleScript")
+n_Types.Name = "Types"
+n_Types.Source = [====[
+-- Junky
+-- Types.lua
+-- Plinko Labs
+--
+-- Shared type surface for the SSJA runtime. Nothing here executes; it exists so
+-- Controllers / Managers / Services can annotate against a single Context type.
+
+export type Side = "Server" | "Client"
+
+export type Namespace = "Network" | "Local"
+
+-- A single Junction entry: a static Destination plus an optional Dynamic resolver
+-- that overrides Destination based on who posted the event.
+export type JunctionEntry = {
+	Destination: string?,
+	Dynamic: ((source: string) -> string?)?,
+}
+
+export type DomainMap = { [string]: JunctionEntry }
+export type NamespaceMap = { [string]: DomainMap }
+
+-- The routing topology. The single source of truth for where events go.
+export type JunctionMap = {
+	Network: NamespaceMap?,
+	Local: NamespaceMap?,
+}
+
+export type Subscription = {
+	Cancel: (self: Subscription) -> (),
+}
+
+-- A deferred handle (from Await / Request). Mirrors Substance's Reaction.
+export type Reaction = {
+	Next: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Throw: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Catch: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Conclusion: (self: Reaction, fn: () -> ()) -> Reaction,
+	Map: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Timeout: (self: Reaction, seconds: number) -> Reaction,
+	Await: (self: Reaction) -> any,
+	Cancel: (self: Reaction) -> (),
+}
+
+export type NetworkScope = {
+	Post: (self: NetworkScope, name: string, ...any) -> (),
+	PostTo: (self: NetworkScope, target: Player, name: string, ...any) -> (),
+	Broadcast: (self: NetworkScope, name: string, ...any) -> (),
+	Request: (self: NetworkScope, name: string, ...any) -> Reaction,
+	RequestFrom: (self: NetworkScope, target: Player, name: string, ...any) -> Reaction,
+	Subscribe: (self: NetworkScope, name: string, handler: (...any) -> ()) -> Subscription,
+	Once: (self: NetworkScope, name: string, handler: (...any) -> ()) -> Subscription,
+	Respond: (self: NetworkScope, name: string, handler: (...any) -> any) -> Subscription,
+	Guard: (self: NetworkScope, name: string, predicate: (...any) -> boolean) -> Subscription,
+}
+
+export type LocalScope = {
+	Post: (self: LocalScope, name: string, ...any) -> (),
+	Request: (self: LocalScope, name: string, ...any) -> Reaction,
+	Subscribe: (self: LocalScope, name: string, handler: (...any) -> ()) -> Subscription,
+	Once: (self: LocalScope, name: string, handler: (...any) -> ()) -> Subscription,
+	Respond: (self: LocalScope, name: string, handler: (...any) -> any) -> Subscription,
+	Guard: (self: LocalScope, name: string, predicate: (...any) -> boolean) -> Subscription,
+}
+
+export type Context = {
+	Side: Side,
+	Source: string,
+
+	Post: (self: Context, namespace: Namespace, domain: string, name: string, ...any) -> (),
+	Subscribe: (self: Context, namespace: Namespace, domain: string, name: string, handler: (...any) -> ()) -> Subscription,
+	Once: (self: Context, namespace: Namespace, domain: string, name: string, handler: (...any) -> ()) -> Subscription,
+	Request: (self: Context, namespace: Namespace, domain: string, name: string, ...any) -> Reaction,
+	Respond: (self: Context, namespace: Namespace, domain: string, name: string, handler: (...any) -> any) -> Subscription,
+	Guard: (self: Context, namespace: Namespace, domain: string, name: string, predicate: (...any) -> boolean) -> Subscription,
+	Await: (self: Context, key: string) -> Reaction,
+
+	GetPackage: (self: Context, name: string) -> any,
+	GetUtility: (self: Context, name: string) -> any,
+	GetService: (self: Context, name: string) -> any,
+
+	OnCleanup: (self: Context, fn: () -> ()) -> (),
+	Inspect: (self: Context) -> any,
+
+	Network: (self: Context, domain: string) -> NetworkScope,
+	Local: (self: Context, domain: string) -> LocalScope,
+}
+
+-- The handle returned by Junky.Configure.
+export type App = {
+	Side: Side,
+	Modules: { [string]: any },
+	Context: Context,
+	Inspect: (self: App) -> any,
+	Stop: (self: App) -> (),
+}
+
+-- A module. :Init and :Start both receive the Context; :Stop receives nothing.
+-- Controllers/Managers implement at least one of :Init/:Start; Services are free
+-- to implement none.
+export type Module = {
+	Init: ((self: any, context: Context) -> ())?,
+	Start: ((self: any, context: Context) -> ())?,
+	Stop: ((self: any) -> ())?,
+	[any]: any,
+}
+
+export type Config = {
+	Junction: JunctionMap,
+	Manifest: any?,
+	Modules: (Instance | { Instance })?,
+	ClassPriority: { [number]: { string } }?,
+	StandalonePriority: { [string]: number }?,
+	Packages: { [string]: any }?,
+	Utilities: { [string]: any }?,
+	Side: Side?,
+	Substance: any?,
+}
+
+return {}
+]====]
+n_Types.Parent = n_Junky
+
+n_Junky.Parent = ReplicatedStorage
+
+print("[Junky] scaffold built under ReplicatedStorage.Junky")

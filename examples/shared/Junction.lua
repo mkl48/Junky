@@ -18,6 +18,8 @@ Junction.Network = {
 		Damaged = { Destination = "CharacterManager" },
 		-- server -> client: the resulting state, sent back to the hit player
 		Ragdoll = { Destination = "CharacterController" },
+		-- client -> server request: "what's my health?" -- CharacterManager responds
+		QueryHealth = { Destination = "CharacterManager" },
 	},
 }
 

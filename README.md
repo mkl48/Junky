@@ -1,11 +1,11 @@
 <div align="center">
 
-# Junction
+# Junky
 
 **Single Script Junction Architecture (SSJA) for Roblox.**
-One Bootstrap. One routing map. One Context. Modules never require each other.
+One `Configure`. One routing map. One Context. Modules never require each other.
 
-<img src="https://img.shields.io/badge/Junction-v0.1.0-6C3EF4?style=for-the-badge" alt="version" />
+<img src="https://img.shields.io/badge/Junky-v0.1.0-6C3EF4?style=for-the-badge" alt="version" />
 <img src="https://img.shields.io/badge/Luau-Roblox-00A2FF?style=for-the-badge" alt="luau" />
 <img src="https://img.shields.io/badge/License-MIT-22c55e?style=for-the-badge" alt="license" />
 <img src="https://img.shields.io/badge/Plinko%20Labs-Built%20By-e11d48?style=for-the-badge" alt="plinko labs" />
@@ -16,15 +16,19 @@ One Bootstrap. One routing map. One Context. Modules never require each other.
 
 ## What it is
 
-Junction is a game-framework runtime that implements **SSJA** — the Junction evolution of
-Single Script Architecture. It gives you three guarantees:
+Junky is a game-framework runtime that implements **SSJA** — the Junction evolution of
+Single Script Architecture. Three guarantees:
 
-1. **A single Bootstrap per side** owns the whole module lifecycle.
+1. **A single Bootstrap per side** (`Junky.Configure`) owns the whole module lifecycle.
 2. **All communication routes through a Junction** — a static map of every event and where it goes.
 3. **Context is the only shared surface** — Controllers, Managers, and Services never `require` each other.
 
 Networking is backed by [Substance](https://github.com/mkl48) (`ker/substance`): the Network
-namespace rides a single typed channel, and you never touch a `RemoteEvent` yourself.
+namespace rides typed channels (a `RemoteEvent` for `Post`, a `RemoteFunction` for `Request`),
+and you never touch a remote yourself.
+
+> **Naming:** the *library* is **Junky**. The *routing map* is still "the **Junction**" —
+> `config.Junction`, with `Junction.Network` / `Junction.Local`.
 
 ---
 
@@ -33,7 +37,7 @@ namespace rides a single typed channel, and you never touch a `RemoteEvent` your
 ```toml
 # wally.toml
 [dependencies]
-Junction  = "ker/junction@0.1.0"
+Junky     = "ker/junky@0.1.0"
 Substance = "ker/substance@0.1.0"
 ```
 
@@ -41,8 +45,11 @@ Substance = "ker/substance@0.1.0"
 wally install
 ```
 
-Junction finds Substance on its own (Wally sibling, `ReplicatedStorage.Packages`, or
-`ReplicatedStorage`). To be explicit, pass `Substance = require(...)` in the Ignite config.
+Junky finds Substance on its own (Wally sibling, `ReplicatedStorage.Packages`, or
+`ReplicatedStorage`). To be explicit, pass `Substance = require(...)` in the config.
+
+No Wally? Run [`scaffold/CreateJunky.lua`](scaffold/CreateJunky.lua) in the Studio Command Bar to
+drop the package under `ReplicatedStorage.Junky`.
 
 ---
 
@@ -50,23 +57,21 @@ Junction finds Substance on its own (Wally sibling, `ReplicatedStorage.Packages`
 
 | Piece | Role |
 | --- | --- |
-| **Bootstrap** | `Junction.Ignite(config)` — one call per side. Discovers modules, orders them, injects Context, calls `:Start`. |
+| **Configure** | `Junky.Configure(config)` — one call per side. Discovers modules, validates the Junction, runs `:Init` then `:Start` in order, returns an **app handle**. |
 | **Junction** | A static `{ Network, Local }` table. Every event declares a `Destination` (and optional `Dynamic` resolver). The single source of truth for routing. |
-| **Context** | Injected into every `:Start`. The only way modules talk: `Post`, `Subscribe`, `Await`, `GetPackage`, `GetUtility`, `GetService`. |
-| **Controller** | Client-side domain wrapper. Coupled to a Manager. `:Start` required. |
-| **Manager** | Server-side domain wrapper. Coupled to a Controller. `:Start` required. |
-| **Service** | Domain logic + state owner. Both sides. Decoupled. `:Start` optional. |
+| **Context** | Injected into `:Init`/`:Start`. The only way modules talk: `Post`, `Subscribe`, `Request`, `Respond`, `Guard`, `Once`, `Await`, `Get*`. |
+| **Controller** | Client-side domain wrapper. Coupled to a Manager. |
+| **Manager** | Server-side domain wrapper. Coupled to a Controller. |
+| **Service** | Domain logic + state owner. Both sides. Decoupled. |
 | **Manifest** | Read-only config, deep-frozen at boot. `Context:GetPackage("Manifest")`. |
 
-Modules are plain `ModuleScript`s. Junction classifies them by name suffix —
-`*Controller`, `*Manager`, `*Service` — and side-filters automatically (Controllers boot on
-the client, Managers on the server, Services on both).
+Modules are plain `ModuleScript`s. Junky classifies them by name suffix —
+`*Controller`, `*Manager`, `*Service` — and side-filters automatically (Controllers boot on the
+client, Managers on the server, Services on both).
 
 ---
 
 ## The two namespaces
-
-Every event belongs to exactly one namespace, and the Junction declares which:
 
 - **`Network`** — crosses the client ↔ server boundary. Transported by Substance.
 - **`Local`** — stays in-process on one side. Resolved directly by the Router.
@@ -76,16 +81,45 @@ Every event belongs to exactly one namespace, and the Junction declares which:
 
 ---
 
+## Lifecycle
+
+```lua
+local Module = {}
+
+function Module:Init(context)  end   -- optional. ALL :Init run before ANY :Start.
+function Module:Start(context) end   -- Controllers/Managers implement Init and/or Start.
+function Module:Stop()         end   -- optional. Runs on app:Stop().
+
+return Module
+```
+
+The **two phases** are the point: wire up your subscribers, responders, and guards in `:Init`, and
+by the time any `:Start` runs every module's wiring already exists. That removes most boot-order
+races without reaching for `Await`. Boot order within each phase comes from the priority maps.
+
+`Junky.Configure` returns an **app handle**:
+
+```lua
+local app = Junky.Configure({ ... })
+
+app:Inspect()   -- live routing topology snapshot (subscribers, responders, guards, await latches)
+app:Stop()      -- :Stop every module (reverse order) + cancel all their subscriptions/cleanups
+app.Modules     -- { [name] = moduleTable }
+app.Context     -- a free-standing Context for glue/tests
+```
+
+---
+
 ## Quick start
 
 ```lua
 -- ServerScriptService/ServerBootstrap.server.lua
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
-local Junction = require(ReplicatedStorage.Packages.Junction)
+local Junky = require(ReplicatedStorage.Packages.Junky)
 local Shared = ReplicatedStorage.Shared
 
-Junction.Ignite({
+Junky.Configure({
     Junction            = require(Shared.Junction),
     Manifest            = require(Shared.Manifest),
     ClassPriority       = require(Shared.ClassPriorityMap),
@@ -94,7 +128,7 @@ Junction.Ignite({
 })
 ```
 
-The client Bootstrap is the same call from `StarterPlayerScripts` — Junction detects the side.
+The client Bootstrap is the same call from `StarterPlayerScripts` — Junky detects the side.
 
 A Junction map:
 
@@ -102,13 +136,14 @@ A Junction map:
 return {
     Network = {
         Character = {
-            Damaged = { Destination = "CharacterManager" },   -- client -> server
-            Ragdoll = { Destination = "CharacterController" }, -- server -> client
+            Damaged     = { Destination = "CharacterManager" },   -- client -> server
+            Ragdoll     = { Destination = "CharacterController" }, -- server -> client
+            QueryHealth = { Destination = "CharacterManager" },    -- client -> server request
         },
     },
     Local = {
         Ability = {
-            Used = { Destination = "CharacterController" },    -- client -> client
+            Used = { Destination = "CharacterController" },        -- client -> client
         },
     },
 }
@@ -117,41 +152,60 @@ return {
 A module:
 
 ```lua
--- CharacterController.lua  (client)
 local CharacterController = {}
 
-function CharacterController:Start(context)
+function CharacterController:Init(context)
     local Network = context:Network("Character")
     local Ability = context:Local("Ability")
 
     Ability:Subscribe("Used", function(combo)
-        Network:Post("Damaged", combo)        -- to the server
+        Network:Post("Damaged", combo)               -- to the server
     end)
+    Network:Subscribe("Ragdoll", function(state) end) -- server's authoritative result
+end
 
-    Network:Subscribe("Ragdoll", function(state)
-        -- server's authoritative result
-    end)
+function CharacterController:Start(context)
+    context:Network("Character"):Request("QueryHealth")  -- ask the server
+        :Timeout(5)
+        :Next(function(health) print("HP:", health) end)
+        :Catch(warn)
 end
 
 return CharacterController
 ```
 
-The full Character Combat flow — two controllers, a manager, two services, and both
-Bootstraps — is in [`examples/`](examples).
+The full Character Combat flow is in [`examples/`](examples).
 
 ---
 
 ## Context API
 
 ```lua
-context:Post(namespace, domain, name, ...)             -- fire and forget
-context:Subscribe(namespace, domain, name, handler)    --> Subscription (:Cancel())
-context:Await(key)                                     --> Reaction, resolves on first post of key
-context:GetPackage(name)                               -- Manifest and any extra packages
+-- fire and forget
+context:Post(namespace, domain, name, ...)
+context:Subscribe(namespace, domain, name, handler)   --> Subscription (:Cancel())
+context:Once(namespace, domain, name, handler)         --> Subscription (auto-cancels after first)
+
+-- request / response
+context:Request(namespace, domain, name, ...)          --> Reaction (resolves with the response)
+context:Respond(namespace, domain, name, handler)      --> Subscription (handler returns the response)
+
+-- policy & timing
+context:Guard(namespace, domain, name, predicate)      --> Subscription (return false to veto)
+context:Await(key)                                     --> Reaction (resolves on first post of "Domain.Name")
+
+-- access
+context:GetPackage(name)   -- Manifest + any extra packages
 context:GetUtility(name)
-context:GetService(name)                               -- a booted module (Manager -> its Service)
-context:Network(domain)                                --> scoped Network object
-context:Local(domain)                                  --> scoped Local object
+context:GetService(name)   -- a booted module (Manager -> its Service)
+
+-- lifecycle & diagnostics
+context:OnCleanup(fn)      -- runs on app:Stop()
+context:Inspect()          -- live topology snapshot
+
+-- scoped shorthands
+context:Network(domain)    --> { Post, PostTo, Broadcast, Request, RequestFrom, Subscribe, Once, Respond, Guard }
+context:Local(domain)      --> { Post, Request, Subscribe, Once, Respond, Guard }
 ```
 
 Scoped shorthand (preferred) — bind namespace + domain once:
@@ -162,95 +216,125 @@ local Ability = context:Local("Ability")
 
 Network:Post("Damaged", hitData)         -- client -> server, OR server -> all clients
 Network:PostTo(player, "Ragdoll", state) -- server -> one client
-Network:Broadcast("RoundOver", payload)  -- server -> all clients (explicit)
-Network:Subscribe("Damaged", function(hitData, player) end)  -- player is appended on the server
+Network:Broadcast("RoundOver", payload)  -- server -> all clients
+Network:Request("QueryHealth"):Next(...) -- client -> server, returns a Reaction
+Network:Subscribe("Damaged", function(hitData, player) end)  -- player appended on the server
 
 Ability:Post("Used", combo)
-Ability:Subscribe("Used", handler)       --> Subscription
+Ability:Respond("Resolve", function(combo) return verdict end)
 ```
 
-**Direction is implicit.** On the client, `Network:Post` goes up to the server. On the server,
-`Network:Post` goes down to every client; `Network:PostTo` targets one. Server-side Network
-subscribers receive the **sending Player as a trailing argument** — never trust a player field
-inside the payload.
+**Direction is implicit.** On the client, `Network:Post`/`:Request` go up to the server. On the
+server, `Network:Post` goes down to every client; `:PostTo`/`:RequestFrom` target one. Server-side
+Network subscribers/responders receive the **sending Player as a trailing argument** — never trust
+a player field inside the payload.
+
+---
+
+## Request / Response
+
+`Request` returns a [`Reaction`](#reactions). Network requests ride a `RemoteFunction`; Local
+requests invoke an in-process responder. Exactly one `Respond` handler answers a given event.
+
+```lua
+-- server
+function CharacterManager:Init(context)
+    context:Network("Character"):Respond("QueryHealth", function(_payload, player)
+        return context:GetService("CharacterService"):GetHealth(player)
+    end)
+end
+
+-- client
+context:Network("Character"):Request("QueryHealth")
+    :Timeout(5)
+    :Next(function(hp) print("my hp:", hp) end)
+    :Catch(function(err) warn("query failed:", err) end)
+```
+
+---
+
+## Guards
+
+A guard is a veto predicate that runs **before** a `Post`/`Request` leaves the source. Return
+`false` to drop the event at the topology edge — validation, rate-limiting, sanity checks, all in
+one place rather than scattered through handlers.
+
+```lua
+Network:Guard("Damaged", function(hitData)
+    return type(hitData) == "table" and hitData.Damage > 0
+end)
+```
+
+---
+
+## Reactions
+
+The handle from `Await` and `Request`. Surface mirrors Substance's Reaction:
+
+```lua
+reaction
+    :Next(fn)         -- on resolve
+    :Throw(fn)        -- on reject  (alias :Catch)
+    :Map(fn)          -- transform into a new Reaction
+    :Timeout(seconds) -- reject "timeout" if still pending
+    :Conclusion(fn)   -- finally
+    :Await()          -- yield for the value (errors on reject)
+    :Cancel()
+```
+
+`Context:Await(key)` resolves the **first** time `"Domain.Name"` is posted on this side, and
+latches — late awaiters resolve immediately. It is **one-shot**; for events that fire repeatedly
+use `Subscribe`. Await answers "has this happened yet?", Subscribe answers "tell me every time."
 
 ---
 
 ## Dynamic routing
 
-A Junction entry can override its `Destination` based on who posted, with a `Dynamic(source)`
-resolver. `Dynamic` wins when it returns a value; otherwise `Destination` is used.
+A Junction entry can override its `Destination` based on who posted, via `Dynamic(source)`.
+`Dynamic` wins when it returns a value; otherwise `Destination` is used.
 
 ```lua
 Used = {
     Destination = "CharacterController",
     Dynamic = function(source)
-        if source == "ComboController" then
-            return "CharacterController"
-        end
-        return nil  -- fall back to Destination
+        return source == "ComboController" and "CharacterController" or nil
     end,
 }
 ```
 
-Delivery is **destination-filtered**: an event is delivered only to subscribers owned by the
-module the Junction resolved to. A subscriber cannot receive an event the Junction didn't route
-to it — which is exactly what keeps the topology honest.
+Delivery is **destination-filtered**: an event reaches only subscribers owned by the module the
+Junction resolved to. A subscriber cannot receive an event the Junction didn't route to it.
 
 ---
 
-## Await vs Subscribe
-
-`Context:Await(key)` returns a `Reaction` that resolves the **first** time `"Domain.Name"` is
-posted on this side, and latches — late awaiters resolve immediately with that first value.
-
-```lua
-context:Await("Match.Started"):Next(function(payload)
-    -- one-shot readiness gate; great for boot-order-insensitive dependencies
-end)
-```
-
-It is **one-shot**. For events that fire repeatedly (e.g. `Player.DataLoaded`, once per player)
-use `Subscribe`. Await is for "has this happened yet?", Subscribe is for "tell me every time."
-
-The `Reaction` surface (`:Next`, `:Throw`, `:Conclusion`, `:Await`, `:Cancel`) mirrors
-Substance's Reaction.
-
----
-
-## Boot order
+## Boot order & validation
 
 ```lua
 -- ClassPriorityMap — tiers, ascending. Controllers + Managers.
-return {
-    [1] = { "CharacterController", "CharacterManager" },
-    [2] = { "ComboController" },
-}
+return { [1] = { "CharacterController", "CharacterManager" }, [2] = { "ComboController" } }
 
 -- StandalonePriorityMap — numeric, ascending. Services.
-return {
-    PlayerService    = 1,
-    CharacterService = 2,
-}
+return { PlayerService = 1, CharacterService = 2 }
 ```
 
-Class-tier modules `:Start` before Services. Cross-group timing dependencies should be handled
-with `Await`, not by reordering. Modules absent from both maps boot last with a warning. All
-`:Start` calls are wrapped so one module erroring doesn't abort the boot.
+Class-tier modules run before Services within each phase. Modules absent from both maps boot last
+with a warning. At boot, Junky also **validates the Junction**: any `Local` destination that names
+no module on this side is flagged (a likely typo). Every `:Init`/`:Start`/`:Stop` is wrapped so one
+module erroring doesn't abort the boot.
 
 ---
 
-## Rules Junction enforces (or assumes)
+## Rules Junky enforces (or assumes)
 
 | | Rule | Enforced by |
 | --- | --- | --- |
 | 1 | Never `require` another Controller / Manager / Service | convention (use Context) |
 | 2 | All inter-module talk goes through Context | the API surface |
-| 3 | Only Junction touches RemoteEvents | `Network` is the sole transport |
-| 4 | Junction is the only routing definition | posting an undeclared event warns |
+| 3 | Only Junky touches RemoteEvents/Functions | `Network` is the sole transport |
+| 4 | Junction is the only routing definition | undeclared posts warn; Local destinations validated |
 | 5 | Manifest is read-only | deep-frozen at boot |
-| 6 | Controllers/Managers implement `:Start` | warns if missing |
-| 7 | Services implement `:Start` only when needed | optional |
+| 6 | Controllers/Managers implement `:Init` and/or `:Start` | warns if neither |
+| 7 | Services implement lifecycle only when needed | all hooks optional |
 | 8 | A Manager may call its own Service | `Context:GetService` |
 
 ---
@@ -259,20 +343,20 @@ with `Await`, not by reordering. Modules absent from both maps boot last with a 
 
 Two Roblox Studio Command Bar scripts in [`scaffold/`](scaffold):
 
-- **`CreateJunction.lua`** — drops the whole Junction package as a `ModuleScript` tree under
-  `ReplicatedStorage.Junction` (no Wally needed). A snapshot of `src/`; regenerate after edits.
+- **`CreateJunky.lua`** — drops the whole Junky package as a `ModuleScript` tree under
+  `ReplicatedStorage.Junky` (no Wally needed). A snapshot of `src/`; regenerate after edits.
 - **`SetupSSJA.lua`** — lays down the recommended project structure (`Shared/`, `Services/`,
-  server/client `Modules/`, both Bootstraps) with a tiny Ping/Pong domain that runs end-to-end
-  on Play, so a new project boots immediately.
+  server/client `Modules/`, both Bootstraps) with a tiny Ping/Pong domain that runs end-to-end on
+  Play.
 
 ---
 
 ## Notes & differences from the spec
 
-- **NetworkController / NetworkManager are built in.** You don't write them; the `Network`
-  layer is the transport. Modules named `NetworkController`/`NetworkManager` are ignored.
-- **Server → client is `Network`, not `Local`.** The spec's §9 routes `Ragdoll` through
-  `Local`; since it crosses the boundary it is correctly `Network` here.
+- **NetworkController / NetworkManager are built in.** You don't write them; the `Network` layer
+  is the transport. Modules named `NetworkController`/`NetworkManager` are ignored.
+- **Server → client is `Network`, not `Local`.** The spec's §9 routes `Ragdoll` through `Local`;
+  since it crosses the boundary it is correctly `Network` here.
 - **Network payloads should be a single value** (idiomatically one table). Multiple positional
   args work, but Roblox drops trailing `nil`s across the wire regardless of framework.
 

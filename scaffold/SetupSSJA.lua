@@ -1,18 +1,18 @@
--- Junction scaffold
+-- Junky scaffold
 -- SetupSSJA.lua
 -- Plinko Labs
 --
 -- Run in Roblox Studio's Command Bar to lay down the recommended SSJA project
 -- structure with a tiny working Ping/Pong domain that runs end-to-end on boot:
 --
---   ReplicatedStorage/Shared/            Junction, Manifest, priority maps
+--   ReplicatedStorage/Shared/            Junction (map), Manifest, priority maps
 --   ReplicatedStorage/Shared/Services/   SessionService (both sides)
 --   ServerScriptService/Modules/         PingManager + ServerBootstrap
 --   StarterPlayerScripts/Modules/        PingController + ClientBootstrap
 --
--- Requires the Junction package present (via Wally at ReplicatedStorage.Packages
--- .Junction, or run CreateJunction first to drop it at ReplicatedStorage.Junction).
--- The generated Bootstraps find it either way.
+-- Requires the Junky package present (via Wally at ReplicatedStorage.Packages
+-- .Junky, or run CreateJunky first to drop it at ReplicatedStorage.Junky). The
+-- generated Bootstraps find it either way.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -123,18 +123,18 @@ script_(ServerScriptService, "Script", "ServerBootstrap", [====[
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local function findJunction()
+local function findJunky()
 	local packages = ReplicatedStorage:FindFirstChild("Packages")
-	if packages and packages:FindFirstChild("Junction") then
-		return require(packages.Junction)
+	if packages and packages:FindFirstChild("Junky") then
+		return require(packages.Junky)
 	end
-	return require(ReplicatedStorage:WaitForChild("Junction"))
+	return require(ReplicatedStorage:WaitForChild("Junky"))
 end
 
-local Junction = findJunction()
+local Junky = findJunky()
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
-Junction.Ignite({
+Junky.Configure({
 	Junction = require(Shared.Junction),
 	Manifest = require(Shared.Manifest),
 	ClassPriority = require(Shared.ClassPriorityMap),
@@ -145,7 +145,7 @@ Junction.Ignite({
 	},
 })
 
-print("[ServerBootstrap] Junction ignited (Server)")
+print("[ServerBootstrap] Junky configured (Server)")
 ]====])
 
 -- client ---------------------------------------------------------------------
@@ -176,19 +176,19 @@ script_(StarterPlayerScripts, "LocalScript", "ClientBootstrap", [====[
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
-local function findJunction()
+local function findJunky()
 	local packages = ReplicatedStorage:FindFirstChild("Packages")
-	if packages and packages:FindFirstChild("Junction") then
-		return require(packages.Junction)
+	if packages and packages:FindFirstChild("Junky") then
+		return require(packages.Junky)
 	end
-	return require(ReplicatedStorage:WaitForChild("Junction"))
+	return require(ReplicatedStorage:WaitForChild("Junky"))
 end
 
-local Junction = findJunction()
+local Junky = findJunky()
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PlayerScripts = Players.LocalPlayer:WaitForChild("PlayerScripts")
 
-Junction.Ignite({
+Junky.Configure({
 	Junction = require(Shared.Junction),
 	Manifest = require(Shared.Manifest),
 	ClassPriority = require(Shared.ClassPriorityMap),
@@ -199,7 +199,7 @@ Junction.Ignite({
 	},
 })
 
-print("[ClientBootstrap] Junction ignited (Client)")
+print("[ClientBootstrap] Junky configured (Client)")
 ]====])
 
-print("[Junction] SSJA project scaffolded. Press Play -- expect a Ping/Pong round trip in the output.")
+print("[Junky] SSJA project scaffolded. Press Play -- expect a Ping/Pong round trip in the output.")

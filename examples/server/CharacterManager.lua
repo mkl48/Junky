@@ -4,16 +4,28 @@
 --
 -- The server half of the Character domain and the counterpart of
 -- CharacterController. It receives the network hit, applies authoritative logic
--- via its own Service, and posts the result back to the originating client.
+-- via its own Service, posts the result back, and answers QueryHealth requests.
 --
--- Note the sanctioned exception: a Manager may call its own domain Service. It
--- does so through Context:GetService, never through require.
+-- Wiring goes in :Init (a Guard, a responder, a subscriber); by the time any
+-- :Start runs, all of it exists. Note the sanctioned exception: a Manager may call
+-- its own domain Service via Context:GetService, never through require.
 
 local CharacterManager = {}
 
-function CharacterManager:Start(context)
+function CharacterManager:Init(context)
 	local Network = context:Network("Character")
 	local CharacterService = context:GetService("CharacterService")
+
+	-- Guard: drop nonsense hits at the topology edge before any handler sees them.
+	-- A guard returning false vetoes the post.
+	Network:Guard("Damaged", function(hitData)
+		return type(hitData) == "table" and type(hitData.Damage) == "number" and hitData.Damage > 0
+	end)
+
+	-- Responder: answer a request with a value. The client gets it as a Reaction.
+	Network:Respond("QueryHealth", function(_payload, player)
+		return CharacterService:GetHealth(player)
+	end)
 
 	-- Server-side Network subscribers receive the sending Player as a trailing
 	-- argument -- never trust the player field inside the payload itself.

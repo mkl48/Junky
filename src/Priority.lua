@@ -1,4 +1,4 @@
--- Junction
+-- Junky
 -- Priority.lua
 -- Plinko Labs
 --

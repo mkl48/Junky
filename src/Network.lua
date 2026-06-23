@@ -1,34 +1,36 @@
--- Junction
+-- Junky
 -- Network.lua
 -- Plinko Labs
 --
--- The Network component plays the NetworkController / NetworkManager role from the
--- SSJA spec: it is the only part of Junction that touches the wire. Everything
--- else is blind to transport. It is backed by Substance -- a single Strict channel
--- carries every Network-namespace event as a typed envelope.
+-- The only part of Junky that touches the wire (the NetworkController /
+-- NetworkManager role). Backed by Substance with two channels:
 --
--- Envelope shape:
---   d  = domain          (string)
---   n  = name            (string)
---   to = destination     (string; "" when the Junction resolved no destination)
---   a  = packed args     (array)
+--   * "JunkyBus"   (Strict / RemoteEvent)    -- fire-and-forget Post.
+--   * "JunkySolve" (Solve  / RemoteFunction)  -- Request/Response.
 --
--- Direction is handled by Substance: a client :Post fires to the server, a server
--- :Post with no target fires to all clients, and a server :Post with a target
--- fires to that one client. On arrival the envelope is unpacked and handed to the
--- Router, which delivers it to the destination module's subscribers.
+-- Both carry the same typed envelope:
+--   d  = domain   n = name   to = destination ("" if none)   a = packed args
+--
+-- Direction is handled by Substance: a client send fires/invokes the server; a
+-- server send with no target fires all clients; a server send with a target hits
+-- that one client. On arrival the envelope is unpacked and handed to the Router --
+-- Deliver for Signals, Answer (which returns a value) for Solves.
+
+local Reaction = require(script.Parent.Reaction)
 
 local Network = {}
 Network.__index = Network
 
-local CHANNEL = "JunctionBus"
+local SIGNAL_CHANNEL = "JunkyBus"
+local SOLVE_CHANNEL = "JunkySolve"
 
 function Network.new(router, side: string, substance)
 	local self = setmetatable({}, Network)
 	self.Router = router
 	self.Side = side
 	self.Substance = substance
-	self._bus = nil
+	self._signal = nil
+	self._solve = nil
 	return self
 end
 
@@ -36,37 +38,78 @@ function Network:Start()
 	local Substance = self.Substance
 	local Type = Substance.Type
 
-	-- One typed envelope, one channel, both sides. Validation runs in Studio only.
-	local Envelope = Substance.Define("JunctionEnvelope", {
-		d = Type.string(),
-		n = Type.string(),
-		to = Type.string(),
-		a = Type.array(Type.any()),
-	})
-	Envelope:Compose(CHANNEL, "Strict")
-	self._bus = Envelope
+	local function envelopeAtom(name: string)
+		return Substance.Define(name, {
+			d = Type.string(),
+			n = Type.string(),
+			to = Type.string(),
+			a = Type.array(Type.any()),
+		})
+	end
 
-	Envelope:Subscribe(function(envelope, player)
-		self:_receive(envelope, player)
+	-- fire-and-forget channel
+	local signal = envelopeAtom("JunkySignalEnvelope")
+	signal:Compose(SIGNAL_CHANNEL, "Strict")
+	signal:Subscribe(function(envelope, player)
+		self:_onSignal(envelope, player)
 	end)
+	self._signal = signal
+
+	-- request/response channel
+	local solve = envelopeAtom("JunkySolveEnvelope")
+	solve:Compose(SOLVE_CHANNEL, "Solve")
+	solve:Subscribe(function(envelope, player)
+		return self:_onSolve(envelope, player)
+	end)
+	self._solve = solve
 end
 
-function Network:Send(domain: string, name: string, destination: string?, target: Player?, packed)
+local function pack(domain, name, destination, packed)
 	local arr = table.move(packed, 1, packed.n, 1, table.create(packed.n))
-	local envelope = {
+	return {
 		d = domain,
 		n = name,
 		to = destination or "",
 		a = arr,
 	}
-	-- Fire-and-forget. Substance returns a Reaction; we intentionally drop it.
-	self._bus:Post(envelope, target)
 end
 
-function Network:_receive(envelope, player: Player?)
-	local destination = if envelope.to ~= "" then envelope.to else nil
-	local packed = table.pack(table.unpack(envelope.a))
-	self.Router:Receive(envelope.d, envelope.n, destination, packed, player)
+local function unpackArgs(envelope)
+	return table.pack(table.unpack(envelope.a))
+end
+
+local function destOf(envelope): string?
+	return if envelope.to ~= "" then envelope.to else nil
+end
+
+-- Post: fire-and-forget. Substance returns a Reaction we intentionally drop.
+function Network:Send(domain: string, name: string, destination: string?, target: Player?, packed)
+	self._signal:Post(pack(domain, name, destination, packed), target)
+end
+
+-- Request: returns a Junky Reaction resolved with the responder's value.
+function Network:Request(domain: string, name: string, destination: string?, target: Player?, packed)
+	local reaction = Reaction.new()
+	local solveReaction = self._solve:Post(pack(domain, name, destination, packed), target)
+
+	-- Substance's Solve Post yields the RemoteFunction return through its own
+	-- Reaction; bridge it onto ours so callers always get the Junky surface.
+	solveReaction:Next(function(response)
+		reaction:Resolve(response)
+	end)
+	solveReaction:Throw(function(err)
+		reaction:Reject(err)
+	end)
+
+	return reaction
+end
+
+function Network:_onSignal(envelope, player: Player?)
+	self.Router:Receive(envelope.d, envelope.n, destOf(envelope), unpackArgs(envelope), player)
+end
+
+function Network:_onSolve(envelope, player: Player?): any
+	return self.Router:Answer(envelope.d, envelope.n, destOf(envelope), unpackArgs(envelope), player)
 end
 
 return Network

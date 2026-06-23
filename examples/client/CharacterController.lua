@@ -2,14 +2,13 @@
 -- client/CharacterController.lua
 -- Plinko Labs
 --
--- The client half of the Character domain. It listens for a local combo, forwards
--- the hit to the server, and reacts to the server's authoritative response -- all
--- through Context. It never references ComboController, CharacterManager, or
--- CharacterService directly.
+-- The client half of the Character domain. Subscriptions are wired in :Init;
+-- :Start kicks off a one-off QueryHealth request to show request/response. It
+-- never references ComboController, CharacterManager, or CharacterService directly.
 
 local CharacterController = {}
 
-function CharacterController:Start(context)
+function CharacterController:Init(context)
 	local Network = context:Network("Character")
 	local Ability = context:Local("Ability")
 
@@ -25,6 +24,20 @@ function CharacterController:Start(context)
 			:format(state.Health, state.Status))
 		-- play ragdoll animation using `state`
 	end)
+end
+
+function CharacterController:Start(context)
+	local Network = context:Network("Character")
+
+	-- Request/response: ask the server for our health, with a 5s timeout.
+	Network:Request("QueryHealth")
+		:Timeout(5)
+		:Next(function(health)
+			print("[CharacterController] server reports my health is", health)
+		end)
+		:Catch(function(err)
+			warn("[CharacterController] QueryHealth failed:", err)
+		end)
 end
 
 return CharacterController

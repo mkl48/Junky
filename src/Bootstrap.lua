@@ -1,4 +1,4 @@
--- Junction
+-- Junky
 -- Bootstrap.lua
 -- Plinko Labs
 --
@@ -7,10 +7,13 @@
 --   2. builds the shared runtime (Packages, Utilities, frozen Manifest),
 --   3. discovers module scripts and classifies them by name suffix,
 --   4. filters by side (Controllers -> client, Managers -> server, Services -> both),
---   5. calls :Start(Context) in priority order, each with its own Context.
+--   5. validates the Junction against what it found,
+--   6. runs every :Init in priority order, then every :Start in priority order,
+--   7. returns a handle with :Inspect() and :Stop().
 --
--- Modules are required up front but never touch each other -- only :Start runs
--- logic, and the order of :Start is the only order that matters.
+-- Two phases (Init then Start) mean a module can wire up subscribers/responders in
+-- :Init and be sure every other module's wiring exists before any :Start fires --
+-- which removes most boot-order races without reaching for Await.
 
 local RunService = game:GetService("RunService")
 
@@ -21,8 +24,6 @@ local Priority = require(script.Parent.Priority)
 
 local Bootstrap = {}
 
--- NetworkController / NetworkManager are built into Junction; if a project still
--- ships modules by those names they are ignored rather than booted.
 local RESERVED = {
 	NetworkController = true,
 	NetworkManager = true,
@@ -40,15 +41,13 @@ local function classify(name: string): string?
 end
 
 local function deepFreeze(value: any): any
-	if type(value) ~= "table" then
+	if type(value) ~= "table" or table.isfrozen(value) then
 		return value
 	end
 	for _, child in value do
 		deepFreeze(child)
 	end
-	if not table.isfrozen(value) then
-		table.freeze(value)
-	end
+	table.freeze(value)
 	return value
 end
 
@@ -73,8 +72,26 @@ local function collectModuleScripts(roots: { Instance }): { ModuleScript }
 	return found
 end
 
-function Bootstrap.Ignite(config, substance)
-	assert(config and config.Junction, "[Junction] Ignite requires config.Junction")
+-- Warn about Local destinations that name no module on this side (a likely typo).
+-- Network destinations live on the other side, so they cannot be checked here.
+local function validateJunction(junctionMap, present, side: string)
+	local localMap = junctionMap.Local
+	if not localMap then
+		return
+	end
+	for domain, byDomain in localMap do
+		for name, entry in byDomain do
+			local destination = entry.Destination
+			if destination and not present[destination] then
+				warn(("[Junky] Local %s.%s routes to '%s', which is not a module on the %s side")
+					:format(domain, name, destination, side))
+			end
+		end
+	end
+end
+
+function Bootstrap.Boot(config, substance)
+	assert(config and config.Junction, "[Junky] Configure requires config.Junction")
 
 	local side = config.Side or (RunService:IsServer() and "Server" or "Client")
 
@@ -94,10 +111,6 @@ function Bootstrap.Ignite(config, substance)
 		packages.Manifest = deepFreeze(config.Manifest)
 	end
 
-	-- Booted modules, exposed via Context:GetService. The table is filled below
-	-- but referenced by the runtime now, so by the time any :Start runs every
-	-- module is reachable. This is the one sanctioned direct-call path (a Manager
-	-- calling its own domain Service); everything else goes through Post/Subscribe.
 	local instances = {} -- [name] = module table
 	local kinds = {} -- [name] = "Controller" | "Manager" | "Service"
 
@@ -124,7 +137,7 @@ function Bootstrap.Ignite(config, substance)
 		local name = moduleScript.Name
 
 		if RESERVED[name] then
-			warn(("[Junction] '%s' is built into Junction and is ignored as a user module"):format(name))
+			warn(("[Junky] '%s' is built into Junky and is ignored as a user module"):format(name))
 			continue
 		end
 
@@ -139,13 +152,13 @@ function Bootstrap.Ignite(config, substance)
 			continue
 		end
 		if instances[name] then
-			warn(("[Junction] duplicate module name '%s' -- the second one is ignored"):format(name))
+			warn(("[Junky] duplicate module name '%s' -- the second one is ignored"):format(name))
 			continue
 		end
 
 		local ok, result = pcall(require, moduleScript)
 		if not ok then
-			warn(("[Junction] failed to require '%s': %s"):format(name, tostring(result)))
+			warn(("[Junky] failed to require '%s': %s"):format(name, tostring(result)))
 			continue
 		end
 
@@ -153,41 +166,85 @@ function Bootstrap.Ignite(config, substance)
 		kinds[name] = kind
 	end
 
-	-- order + Start -------------------------------------------------------
+	-- order ---------------------------------------------------------------
 	local present = {}
 	for name in instances do
 		present[name] = true
 	end
 
+	validateJunction(config.Junction, present, side)
+
 	local order, unprioritized = Priority.Order(config.ClassPriority, config.StandalonePriority, present)
 	for _, name in unprioritized do
-		warn(("[Junction] %s has no entry in any priority map -- booting it last"):format(name))
+		warn(("[Junky] %s has no entry in any priority map -- booting it last"):format(name))
 	end
 
+	-- one Context per module ----------------------------------------------
+	local contexts = {}
+	for _, name in order do
+		contexts[name] = Context.new(name, runtime)
+	end
+
+	-- phase 1: Init (optional on every kind) ------------------------------
 	for _, name in order do
 		local moduleTable = instances[name]
-		local kind = kinds[name]
-		local context = Context.new(name, runtime)
-
-		if type(moduleTable) == "table" and type(moduleTable.Start) == "function" then
-			local ok, err = pcall(moduleTable.Start, moduleTable, context)
+		if type(moduleTable) == "table" and type(moduleTable.Init) == "function" then
+			local ok, err = pcall(moduleTable.Init, moduleTable, contexts[name])
 			if not ok then
-				warn(("[Junction] %s:Start() errored: %s"):format(name, tostring(err)))
+				warn(("[Junky] %s:Init() errored: %s"):format(name, tostring(err)))
 			end
-		elseif kind ~= "Service" then
-			warn(("[Junction] %s is a %s and must implement :Start()"):format(name, kind))
 		end
 	end
 
-	return {
+	-- phase 2: Start (required for Controllers/Managers) ------------------
+	for _, name in order do
+		local moduleTable = instances[name]
+		local kind = kinds[name]
+		if type(moduleTable) == "table" and type(moduleTable.Start) == "function" then
+			local ok, err = pcall(moduleTable.Start, moduleTable, contexts[name])
+			if not ok then
+				warn(("[Junky] %s:Start() errored: %s"):format(name, tostring(err)))
+			end
+		elseif kind ~= "Service" and type(moduleTable) == "table" and type(moduleTable.Init) ~= "function" then
+			warn(("[Junky] %s is a %s and must implement :Start() (or :Init())"):format(name, kind))
+		end
+	end
+
+	-- handle --------------------------------------------------------------
+	local stopped = false
+	local handle = {
 		Side = side,
 		Router = router,
 		Network = network,
 		Modules = instances,
-		-- A free-standing Context for code that boots modules but also needs the
-		-- bus itself (tests, glue, late wiring).
-		Context = Context.new("Bootstrap", runtime),
+		Context = Context.new("Junky", runtime),
 	}
+
+	function handle:Inspect()
+		return router:Inspect()
+	end
+
+	-- Tear down in reverse boot order: :Stop each module, then drop its routing
+	-- entries and run its OnCleanup callbacks.
+	function handle:Stop()
+		if stopped then
+			return
+		end
+		stopped = true
+		for index = #order, 1, -1 do
+			local name = order[index]
+			local moduleTable = instances[name]
+			if type(moduleTable) == "table" and type(moduleTable.Stop) == "function" then
+				local ok, err = pcall(moduleTable.Stop, moduleTable)
+				if not ok then
+					warn(("[Junky] %s:Stop() errored: %s"):format(name, tostring(err)))
+				end
+			end
+			contexts[name]:_teardown()
+		end
+	end
+
+	return handle
 end
 
 return Bootstrap

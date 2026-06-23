@@ -1,16 +1,12 @@
--- Junction
+-- Junky
 -- Reaction.lua
 -- Plinko Labs
 --
--- The async handle returned by Context:Await. It is a one-shot deferred: it sits
--- Pending until the awaited key is first posted anywhere on this side, then
--- resolves with that first payload. The method surface (:Next / :Throw /
--- :Conclusion / :Await / :Cancel) deliberately mirrors Substance's Reaction so the
--- two are interchangeable at call sites.
---
--- Unlike Substance's Reaction, this one is resolved externally (by the Router when
--- a key fires) rather than by running an attempt function, which is why it lives in
--- Junction rather than reusing Substance's internal module.
+-- The async handle returned by Context:Await and Context:Request. It is a deferred
+-- resolved externally (by the Router when a key fires, or by a request response).
+-- Its method surface mirrors Substance's Reaction so the two are interchangeable
+-- at call sites: :Next / :Throw / :Catch / :Conclusion / :Map / :Timeout / :Await /
+-- :Cancel.
 
 local Reaction = {}
 Reaction.__index = Reaction
@@ -20,7 +16,10 @@ type State = "Pending" | "Resolved" | "Rejected" | "Cancelled"
 export type Reaction = {
 	Next: (self: Reaction, fn: (any) -> any) -> Reaction,
 	Throw: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Catch: (self: Reaction, fn: (any) -> any) -> Reaction,
 	Conclusion: (self: Reaction, fn: () -> ()) -> Reaction,
+	Map: (self: Reaction, fn: (any) -> any) -> Reaction,
+	Timeout: (self: Reaction, seconds: number) -> Reaction,
 	Await: (self: Reaction) -> any,
 	Cancel: (self: Reaction) -> (),
 }
@@ -33,6 +32,13 @@ function Reaction.new(): Reaction
 	self._throw = {}
 	self._finally = {}
 	return (self :: any) :: Reaction
+end
+
+-- A reaction that is already resolved with `value`. Used for cached/latched paths.
+function Reaction.resolved(value: any): Reaction
+	local reaction = Reaction.new()
+	reaction:Resolve(value)
+	return reaction
 end
 
 function Reaction:_settle(state: State, value: any)
@@ -55,7 +61,8 @@ function Reaction:_settle(state: State, value: any)
 	table.clear(self._finally)
 end
 
--- Called by the Router. Not part of the public Reaction surface.
+-- Resolve / Reject are driven by the framework (Router, Network). Left unprefixed
+-- so the runtime can settle a reaction it handed out.
 function Reaction:Resolve(value: any)
 	self:_settle("Resolved", value)
 end
@@ -82,12 +89,43 @@ function Reaction:Throw(fn: (any) -> any): Reaction
 	return self
 end
 
+function Reaction:Catch(fn: (any) -> any): Reaction
+	return self:Throw(fn)
+end
+
 function Reaction:Conclusion(fn: () -> ()): Reaction
 	if self._state ~= "Pending" then
 		task.spawn(fn)
 	else
 		table.insert(self._finally, fn)
 	end
+	return self
+end
+
+-- Transform the resolved value into a new Reaction. Errors in `fn` reject the child.
+function Reaction:Map(fn: (any) -> any): Reaction
+	local child = Reaction.new()
+	self:Next(function(value)
+		local ok, result = pcall(fn, value)
+		if ok then
+			child:Resolve(result)
+		else
+			child:Reject(result)
+		end
+	end)
+	self:Throw(function(reason)
+		child:Reject(reason)
+	end)
+	return child
+end
+
+-- Reject with "timeout" if still pending after `seconds`.
+function Reaction:Timeout(seconds: number): Reaction
+	task.delay(seconds, function()
+		if self._state == "Pending" then
+			self:Reject("timeout")
+		end
+	end)
 	return self
 end
 

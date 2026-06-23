@@ -3,7 +3,7 @@
 -- Plinko Labs
 --
 -- Static, read-only game config. Injected into Context and reachable as
--- Context:GetPackage("Manifest"). Junction deep-freezes it at boot, so any attempt
+-- Context:GetPackage("Manifest"). Junky deep-freezes it at boot, so any attempt
 -- to mutate it at runtime will error.
 
 return {
