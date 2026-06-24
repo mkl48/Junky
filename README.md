@@ -48,8 +48,26 @@ wally install
 Junky finds Substance on its own (Wally sibling, `ReplicatedStorage.Packages`, or
 `ReplicatedStorage`). To be explicit, pass `Substance = require(...)` in the config.
 
-No Wally? Run [`scaffold/CreateJunky.lua`](scaffold/CreateJunky.lua) in the Studio Command Bar to
-drop the package under `ReplicatedStorage.Junky`.
+### Command line (no Wally)
+
+Paste this one snippet into the Studio command bar; it fetches and runs the full installer over
+HTTP (enable *Game Settings → Security → Allow HTTP Requests*), recreating the whole `Junky` tree
+under `ReplicatedStorage`:
+
+```lua
+local h = game:GetService("HttpService")
+loadstring(h:GetAsync("https://raw.githubusercontent.com/mkl48/Junky/master/dist/install.luau"))()
+```
+
+([`dist/bootstrap.luau`](dist/bootstrap.luau) is the same with error handling + a no-`loadstring`
+fallback.) Or, offline, paste the whole [`dist/install.luau`](dist/install.luau) directly. Junky
+still needs **Substance** present — install it the same way, or via Wally.
+
+Regenerate the installer from `src/` any time with:
+
+```sh
+lune run scripts/build-installer
+```
 
 ---
 
@@ -339,10 +357,10 @@ module erroring doesn't abort the boot.
 
 ## Scaffolding
 
-Two Roblox Studio Command Bar scripts in [`scaffold/`](scaffold):
+To install the package itself without Wally, use the [command-line installer](#command-line-no-wally)
+(`dist/install.luau`, generated from `src/`). To scaffold a project around it, run the Studio
+Command Bar script in [`scaffold/`](scaffold):
 
-- **`CreateJunky.lua`** — drops the whole Junky package as a `ModuleScript` tree under
-  `ReplicatedStorage.Junky` (no Wally needed). A snapshot of `src/`; regenerate after edits.
 - **`SetupSSJA.lua`** — lays down the recommended project structure (`Shared/`, `Services/`,
   server/client `Modules/`, both Bootstraps) with a tiny Ping/Pong domain that runs end-to-end on
   Play.

@@ -11,8 +11,8 @@
 --   StarterPlayerScripts/Modules/        PingController + ClientBootstrap
 --
 -- Requires the Junky package present (via Wally at ReplicatedStorage.Packages
--- .Junky, or run CreateJunky first to drop it at ReplicatedStorage.Junky). The
--- generated Bootstraps find it either way.
+-- .Junky, or run the command-line installer -- dist/install.luau -- first to drop
+-- it at ReplicatedStorage.Junky). The generated Bootstraps find it either way.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
