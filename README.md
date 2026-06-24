@@ -71,6 +71,45 @@ lune run scripts/build-installer
 
 ---
 
+## Project structure
+
+The recommended layout — sides split by container, modules grouped by role.
+[`scaffold/SetupSSJA.lua`](scaffold/SetupSSJA.lua) lays this down with a working Ping/Pong domain.
+
+```
+ReplicatedStorage/
+  Shared/
+    Assets/                       shared assets
+    Modules/
+      Packages/      Junky/       the framework package (+ Substance)
+      Utility/                    Junction, Manifest, ClassPriorityMap, StandalonePriorityMap
+      Services/                   *Service modules (both sides)
+  Client/
+    Modules/
+      Packages/                   client-only deps
+      Utility/                    client-only helpers
+      Controllers/                *Controller modules (client)
+
+ServerScriptService/
+  ServerBootstrap                 server entry point (Script)
+
+ServerStorage/
+  Modules/
+    Managers/                     *Manager modules (server-only, not replicated)
+    Packages/                     server-only deps
+    Utility/                      server-only helpers
+
+StarterPlayer/StarterPlayerScripts/
+  ClientBootstrap                 client entry point (LocalScript)
+```
+
+Discovery is **recursive and name-based** — a Bootstrap passes root folders and Junky finds every
+`ModuleScript` under them, classifying by suffix (`*Controller`/`*Manager`/`*Service`) and
+side-filtering. The folders above are organization for you; Junky doesn't require these exact
+paths. Managers live in `ServerStorage` so their source never replicates to clients.
+
+---
+
 ## Concepts
 
 | Piece | Role |
@@ -131,22 +170,24 @@ app.Context     -- a free-standing Context for glue/tests
 ## Quick start
 
 ```lua
--- ServerScriptService/ServerBootstrap.server.lua
+-- ServerScriptService/ServerBootstrap (Script)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
-local Junky = require(ReplicatedStorage.Packages.Junky)
-local Shared = ReplicatedStorage.Shared
+local ServerStorage = game:GetService("ServerStorage")
+local Junky = require(ReplicatedStorage.Shared.Modules.Packages.Junky)
+local Utility = ReplicatedStorage.Shared.Modules.Utility
 
 Junky.Configure({
-    Junction            = require(Shared.Junction),
-    Manifest            = require(Shared.Manifest),
-    ClassPriority       = require(Shared.ClassPriorityMap),
-    StandalonePriority  = require(Shared.StandalonePriorityMap),
-    Modules             = { ServerScriptService.Modules, Shared.Services },
+    Junction            = require(Utility.Junction),
+    Manifest            = require(Utility.Manifest),
+    ClassPriority       = require(Utility.ClassPriorityMap),
+    StandalonePriority  = require(Utility.StandalonePriorityMap),
+    Modules             = { ServerStorage.Modules, ReplicatedStorage.Shared.Modules.Services },
 })
 ```
 
-The client Bootstrap is the same call from `StarterPlayerScripts` — Junky detects the side.
+The client Bootstrap is the same call from `StarterPlayerScripts`, passing
+`{ ReplicatedStorage.Client.Modules, ReplicatedStorage.Shared.Modules.Services }` — Junky detects
+the side and boots only the Controllers.
 
 A Junction map:
 

@@ -42,14 +42,15 @@ local _1 = mod("Junky", RS, [[
 --
 -- Usage (one Bootstrap script per side):
 --
---   local Junky = require(ReplicatedStorage.Packages.Junky)
+--   local Junky = require(ReplicatedStorage.Shared.Modules.Packages.Junky)
+--   local Utility = ReplicatedStorage.Shared.Modules.Utility
 --
 --   local app = Junky.Configure({
---       Junction = require(Shared.Junction),       -- the routing map
---       Manifest = require(Shared.Manifest),       -- read-only config
---       Modules = { ServerScriptService.Modules, Shared.Services },
---       ClassPriority = require(Shared.ClassPriorityMap),
---       StandalonePriority = require(Shared.StandalonePriorityMap),
+--       Junction = require(Utility.Junction),             -- the routing map
+--       Manifest = require(Utility.Manifest),             -- read-only config
+--       Modules = { ServerStorage.Modules, ReplicatedStorage.Shared.Modules.Services },
+--       ClassPriority = require(Utility.ClassPriorityMap),
+--       StandalonePriority = require(Utility.StandalonePriorityMap),
 --   })
 --
 --   -- app:Inspect()  -> live topology snapshot

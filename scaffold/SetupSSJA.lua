@@ -5,17 +5,24 @@
 -- Run in Roblox Studio's Command Bar to lay down the recommended SSJA project
 -- structure with a tiny working Ping/Pong domain that runs end-to-end on boot:
 --
---   ReplicatedStorage/Shared/            Junction (map), Manifest, priority maps
---   ReplicatedStorage/Shared/Services/   SessionService (both sides)
---   ServerScriptService/Modules/         PingManager + ServerBootstrap
---   StarterPlayerScripts/Modules/        PingController + ClientBootstrap
+--   ReplicatedStorage/Shared/Assets/                shared assets (empty)
+--   ReplicatedStorage/Shared/Modules/Packages/      Junky + deps live here
+--   ReplicatedStorage/Shared/Modules/Utility/       Junction, Manifest, priority maps
+--   ReplicatedStorage/Shared/Modules/Services/      SessionService (both sides)
+--   ReplicatedStorage/Client/Modules/Controllers/   PingController (client)
+--   ServerStorage/Modules/Managers/                 PingManager (server-only)
+--   ServerScriptService/ServerBootstrap             server entry point
+--   StarterPlayerScripts/ClientBootstrap            client entry point
 --
--- Requires the Junky package present (via Wally at ReplicatedStorage.Packages
--- .Junky, or run the command-line installer -- dist/install.luau -- first to drop
--- it at ReplicatedStorage.Junky). The generated Bootstraps find it either way.
+-- Requires the Junky package present. Put it at ReplicatedStorage.Shared.Modules
+-- .Packages.Junky (Wally configured to that path, or move it there after the
+-- command-line installer drops it at ReplicatedStorage.Junky). The generated
+-- Bootstraps look there first, then fall back to ReplicatedStorage.Packages.Junky
+-- and ReplicatedStorage.Junky, so any of those work.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
 local StarterPlayer = game:GetService("StarterPlayer")
 local StarterPlayerScripts = StarterPlayer:WaitForChild("StarterPlayerScripts")
 
@@ -42,12 +49,38 @@ local function script_(parent: Instance, className: string, name: string, source
 	return s
 end
 
--- shared ---------------------------------------------------------------------
+-- The Junky-finder both Bootstraps embed: this architecture's path first, then
+-- the default Wally and no-Wally installer locations.
+local FIND_JUNKY = [====[
+local function findJunky()
+	local rs = game:GetService("ReplicatedStorage")
+	local shared = rs:FindFirstChild("Shared")
+	if shared then
+		local modules = shared:FindFirstChild("Modules")
+		local packages = modules and modules:FindFirstChild("Packages")
+		if packages and packages:FindFirstChild("Junky") then
+			return require(packages.Junky)
+		end
+	end
+	local packages = rs:FindFirstChild("Packages")
+	if packages and packages:FindFirstChild("Junky") then
+		return require(packages.Junky)
+	end
+	return require(rs:WaitForChild("Junky"))
+end
+]====]
+
+-- ReplicatedStorage/Shared -----------------------------------------------------
 
 local Shared = folder(ReplicatedStorage, "Shared")
-local Services = folder(Shared, "Services")
+folder(Shared, "Assets")
 
-script_(Shared, "ModuleScript", "Junction", [====[
+local SharedModules = folder(Shared, "Modules")
+folder(SharedModules, "Packages") -- Junky + deps live here
+local Utility = folder(SharedModules, "Utility")
+local Services = folder(SharedModules, "Services")
+
+script_(Utility, "ModuleScript", "Junction", [====[
 -- The routing topology. Declare every event here, once, with where it goes.
 return {
 	Network = {
@@ -60,7 +93,7 @@ return {
 }
 ]====])
 
-script_(Shared, "ModuleScript", "Manifest", [====[
+script_(Utility, "ModuleScript", "Manifest", [====[
 -- Read-only game config. Deep-frozen at boot; never mutate at runtime.
 return {
 	Enums = {},
@@ -70,14 +103,14 @@ return {
 }
 ]====])
 
-script_(Shared, "ModuleScript", "ClassPriorityMap", [====[
+script_(Utility, "ModuleScript", "ClassPriorityMap", [====[
 -- Tier-based boot order for Controllers and Managers (ascending tier).
 return {
 	[1] = { "PingController", "PingManager" },
 }
 ]====])
 
-script_(Shared, "ModuleScript", "StandalonePriorityMap", [====[
+script_(Utility, "ModuleScript", "StandalonePriorityMap", [====[
 -- Numeric boot order for Services (ascending).
 return {
 	SessionService = 1,
@@ -97,62 +130,15 @@ end
 return SessionService
 ]====])
 
--- server ---------------------------------------------------------------------
+-- ReplicatedStorage/Client -----------------------------------------------------
 
-local ServerModules = folder(ServerScriptService, "Modules")
+local Client = folder(ReplicatedStorage, "Client")
+local ClientModules = folder(Client, "Modules")
+folder(ClientModules, "Packages") -- client-only deps (empty)
+folder(ClientModules, "Utility") -- client-only helpers (empty)
+local Controllers = folder(ClientModules, "Controllers")
 
-script_(ServerModules, "ModuleScript", "PingManager", [====[
--- Server half of the System domain. Receives Ping, replies Pong to the sender.
-local PingManager = {}
-
-function PingManager:Start(context)
-	local System = context:Network("System")
-
-	-- Server-side Network subscribers get the sending Player as a trailing arg.
-	System:Subscribe("Ping", function(sentAt, player)
-		print("[PingManager] ping from", player.Name)
-		System:PostTo(player, "Pong", sentAt)
-	end)
-end
-
-return PingManager
-]====])
-
-script_(ServerScriptService, "Script", "ServerBootstrap", [====[
--- The single server entry point.
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
-
-local function findJunky()
-	local packages = ReplicatedStorage:FindFirstChild("Packages")
-	if packages and packages:FindFirstChild("Junky") then
-		return require(packages.Junky)
-	end
-	return require(ReplicatedStorage:WaitForChild("Junky"))
-end
-
-local Junky = findJunky()
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-
-Junky.Configure({
-	Junction = require(Shared.Junction),
-	Manifest = require(Shared.Manifest),
-	ClassPriority = require(Shared.ClassPriorityMap),
-	StandalonePriority = require(Shared.StandalonePriorityMap),
-	Modules = {
-		ServerScriptService:WaitForChild("Modules"),
-		Shared:WaitForChild("Services"),
-	},
-})
-
-print("[ServerBootstrap] Junky configured (Server)")
-]====])
-
--- client ---------------------------------------------------------------------
-
-local ClientModules = folder(StarterPlayerScripts, "Modules")
-
-script_(ClientModules, "ModuleScript", "PingController", [====[
+script_(Controllers, "ModuleScript", "PingController", [====[
 -- Client half of the System domain. Sends a Ping on boot, awaits the Pong.
 local PingController = {}
 
@@ -171,31 +157,77 @@ end
 return PingController
 ]====])
 
+-- ServerStorage ----------------------------------------------------------------
+
+local ServerModules = folder(ServerStorage, "Modules")
+local Managers = folder(ServerModules, "Managers")
+folder(ServerModules, "Packages") -- server-only deps (empty)
+folder(ServerModules, "Utility") -- server-only helpers (empty)
+
+script_(Managers, "ModuleScript", "PingManager", [====[
+-- Server half of the System domain. Receives Ping, replies Pong to the sender.
+local PingManager = {}
+
+function PingManager:Start(context)
+	local System = context:Network("System")
+
+	-- Server-side Network subscribers get the sending Player as a trailing arg.
+	System:Subscribe("Ping", function(sentAt, player)
+		print("[PingManager] ping from", player.Name)
+		System:PostTo(player, "Pong", sentAt)
+	end)
+end
+
+return PingManager
+]====])
+
+-- ServerScriptService ----------------------------------------------------------
+
+script_(ServerScriptService, "Script", "ServerBootstrap", [====[
+-- The single server entry point.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+]====] .. FIND_JUNKY .. [====[
+
+local Junky = findJunky()
+local Utility = ReplicatedStorage:WaitForChild("Shared").Modules.Utility
+local Services = ReplicatedStorage.Shared.Modules.Services
+
+Junky.Configure({
+	Junction = require(Utility.Junction),
+	Manifest = require(Utility.Manifest),
+	ClassPriority = require(Utility.ClassPriorityMap),
+	StandalonePriority = require(Utility.StandalonePriorityMap),
+	Modules = {
+		ServerStorage:WaitForChild("Modules"),
+		Services,
+	},
+})
+
+print("[ServerBootstrap] Junky configured (Server)")
+]====])
+
+-- StarterPlayerScripts ---------------------------------------------------------
+
 script_(StarterPlayerScripts, "LocalScript", "ClientBootstrap", [====[
 -- The single client entry point.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 
-local function findJunky()
-	local packages = ReplicatedStorage:FindFirstChild("Packages")
-	if packages and packages:FindFirstChild("Junky") then
-		return require(packages.Junky)
-	end
-	return require(ReplicatedStorage:WaitForChild("Junky"))
-end
+]====] .. FIND_JUNKY .. [====[
 
 local Junky = findJunky()
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local PlayerScripts = Players.LocalPlayer:WaitForChild("PlayerScripts")
+local SharedModules = ReplicatedStorage:WaitForChild("Shared").Modules
+local ClientModules = ReplicatedStorage:WaitForChild("Client").Modules
 
 Junky.Configure({
-	Junction = require(Shared.Junction),
-	Manifest = require(Shared.Manifest),
-	ClassPriority = require(Shared.ClassPriorityMap),
-	StandalonePriority = require(Shared.StandalonePriorityMap),
+	Junction = require(SharedModules.Utility.Junction),
+	Manifest = require(SharedModules.Utility.Manifest),
+	ClassPriority = require(SharedModules.Utility.ClassPriorityMap),
+	StandalonePriority = require(SharedModules.Utility.StandalonePriorityMap),
 	Modules = {
-		PlayerScripts:WaitForChild("Modules"),
-		Shared:WaitForChild("Services"),
+		ClientModules,
+		SharedModules.Services,
 	},
 })
 
