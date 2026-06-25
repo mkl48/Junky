@@ -465,5 +465,8 @@ Command Bar script in [`scaffold/`](scaffold):
 <div align="center">
 
 **SSJA · Single Script Junction Architecture · Plinko Labs**
+**AI NOTICE**
+You know i aint writing allat.
+AI README.md
 
 </div>
