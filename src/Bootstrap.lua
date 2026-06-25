@@ -4,9 +4,10 @@
 --
 -- The single entry point for a side. Bootstrap:
 --   1. stands up the Router + Network (the transport),
---   2. builds the shared runtime (Packages, Utilities, frozen Manifest),
+--   2. builds the shared runtime (injected Packages, Utilities, frozen Manifest, Player),
 --   3. discovers module scripts and classifies them by name suffix,
---   4. filters by side (Controllers -> client, Managers -> server, Services -> both),
+--   4. filters by side (Controllers -> client, Managers -> server; Services boot on
+--      whichever side discovers them -- so a Service is side-scoped by where it lives),
 --   5. validates the Junction against what it found,
 --   6. calls every module's :Start in priority order, each with its own Context,
 --   7. returns a handle with :Inspect() and :Stop().
@@ -16,6 +17,7 @@
 -- maps. Timing-sensitive cross-module dependencies use Context:Await.
 
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
 local Router = require(script.Parent.Router)
 local Network = require(script.Parent.Network)
@@ -101,10 +103,14 @@ function Bootstrap.Boot(config, substance)
 	network:Start()
 
 	-- shared runtime ------------------------------------------------------
+	-- Injected dependencies, reachable via Context:GetPackage. `Inject` is the
+	-- name to use; `Packages` is accepted as an alias. Later sources win.
 	local packages = {}
-	if config.Packages then
-		for name, value in config.Packages do
-			packages[name] = value
+	for _, source in { config.Packages, config.Inject } do
+		if source then
+			for name, value in source do
+				packages[name] = value
+			end
 		end
 	end
 	if config.Manifest ~= nil then
@@ -114,8 +120,13 @@ function Bootstrap.Boot(config, substance)
 	local instances = {} -- [name] = module table
 	local kinds = {} -- [name] = "Controller" | "Manager" | "Service"
 
+	-- The acting player: the LocalPlayer on the client, nil on the server (where
+	-- there is no single player). Surfaced as Context.Player.
+	local player = if side == "Client" then Players.LocalPlayer else nil
+
 	local runtime = {
 		Side = side,
+		Player = player,
 		Router = router,
 		Network = network,
 		Packages = packages,

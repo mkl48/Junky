@@ -16,9 +16,10 @@
 --   local app = Junky.Configure({
 --       Junction = require(Utility.Junction),             -- the routing map
 --       Manifest = require(Utility.Manifest),             -- read-only config
---       Modules = { ServerStorage.Modules, ReplicatedStorage.Shared.Modules.Services },
+--       Modules = { ServerStorage.Modules },              -- Managers + server Services
 --       ClassPriority = require(Utility.ClassPriorityMap),
 --       StandalonePriority = require(Utility.StandalonePriorityMap),
+--       Inject = { Profiles = require(...) },             -- live packages -> GetPackage
 --   })
 --
 --   -- app:Inspect()  -> live topology snapshot

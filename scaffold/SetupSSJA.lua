@@ -8,11 +8,17 @@
 --   ReplicatedStorage/Shared/Assets/                shared assets (empty)
 --   ReplicatedStorage/Shared/Modules/Packages/      Junky + deps live here
 --   ReplicatedStorage/Shared/Modules/Utility/       Junction, Manifest, priority maps
---   ReplicatedStorage/Shared/Modules/Services/      SessionService (both sides)
 --   ReplicatedStorage/Client/Modules/Controllers/   PingController (client)
+--   ReplicatedStorage/Client/Modules/Services/      SessionService (client half)
 --   ServerStorage/Modules/Managers/                 PingManager (server-only)
+--   ServerStorage/Modules/Services/                 SessionService (server half)
 --   ServerScriptService/ServerBootstrap             server entry point
 --   StarterPlayerScripts/ClientBootstrap            client entry point
+--
+-- Services are side-split: a Service boots on whichever side discovers it, so the
+-- client half lives under Client and the server half under ServerStorage. They can
+-- share a domain name (like a Controller/Manager pair) since they never run in the
+-- same VM.
 --
 -- Requires the Junky package present. Put it at ReplicatedStorage.Shared.Modules
 -- .Packages.Junky (Wally configured to that path, or move it there after the
@@ -70,6 +76,28 @@ local function findJunky()
 end
 ]====]
 
+-- A client/server Service shares this body: it reads an injected package and the
+-- acting player off the Context, so it shows both features on each side.
+local SESSION_SERVICE = [====[
+-- A Service owns one slice of state and is decoupled from how data reaches it.
+-- This domain is side-split: the client half boots on the client, the server half
+-- on the server. Both read the injected Constants package off the Context.
+local SessionService = {}
+SessionService.State = {}
+
+function SessionService:Start(context)
+	local constants = context:GetPackage("Constants")
+	print(("[SessionService] %s session ready (v%s)"):format(context.Side, constants.Version))
+
+	-- Context.Player is the LocalPlayer on the client, nil on the server.
+	if context.Player then
+		print("[SessionService] local player:", context.Player.Name)
+	end
+end
+
+return SessionService
+]====]
+
 -- ReplicatedStorage/Shared -----------------------------------------------------
 
 local Shared = folder(ReplicatedStorage, "Shared")
@@ -78,7 +106,6 @@ folder(Shared, "Assets")
 local SharedModules = folder(Shared, "Modules")
 folder(SharedModules, "Packages") -- Junky + deps live here
 local Utility = folder(SharedModules, "Utility")
-local Services = folder(SharedModules, "Services")
 
 script_(Utility, "ModuleScript", "Junction", [====[
 -- The routing topology. Declare every event here, once, with where it goes.
@@ -111,23 +138,10 @@ return {
 ]====])
 
 script_(Utility, "ModuleScript", "StandalonePriorityMap", [====[
--- Numeric boot order for Services (ascending).
+-- Numeric boot order for Services (ascending). Names resolve per side.
 return {
 	SessionService = 1,
 }
-]====])
-
-script_(Services, "ModuleScript", "SessionService", [====[
--- A Service owns one slice of state and is decoupled from how data reaches it.
-local SessionService = {}
-SessionService.State = {}
-
-function SessionService:Start(context)
-	-- :Start is optional for Services; here just to show the hook.
-	print("[SessionService] ready on", context.Side)
-end
-
-return SessionService
 ]====])
 
 -- ReplicatedStorage/Client -----------------------------------------------------
@@ -137,6 +151,7 @@ local ClientModules = folder(Client, "Modules")
 folder(ClientModules, "Packages") -- client-only deps (empty)
 folder(ClientModules, "Utility") -- client-only helpers (empty)
 local Controllers = folder(ClientModules, "Controllers")
+local ClientServices = folder(ClientModules, "Services")
 
 script_(Controllers, "ModuleScript", "PingController", [====[
 -- Client half of the System domain. Sends a Ping on boot, awaits the Pong.
@@ -157,12 +172,15 @@ end
 return PingController
 ]====])
 
+script_(ClientServices, "ModuleScript", "SessionService", SESSION_SERVICE)
+
 -- ServerStorage ----------------------------------------------------------------
 
 local ServerModules = folder(ServerStorage, "Modules")
 local Managers = folder(ServerModules, "Managers")
 folder(ServerModules, "Packages") -- server-only deps (empty)
 folder(ServerModules, "Utility") -- server-only helpers (empty)
+local ServerServices = folder(ServerModules, "Services")
 
 script_(Managers, "ModuleScript", "PingManager", [====[
 -- Server half of the System domain. Receives Ping, replies Pong to the sender.
@@ -181,6 +199,8 @@ end
 return PingManager
 ]====])
 
+script_(ServerServices, "ModuleScript", "SessionService", SESSION_SERVICE)
+
 -- ServerScriptService ----------------------------------------------------------
 
 script_(ServerScriptService, "Script", "ServerBootstrap", [====[
@@ -192,17 +212,18 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local Junky = findJunky()
 local Utility = ReplicatedStorage:WaitForChild("Shared").Modules.Utility
-local Services = ReplicatedStorage.Shared.Modules.Services
 
 Junky.Configure({
 	Junction = require(Utility.Junction),
 	Manifest = require(Utility.Manifest),
 	ClassPriority = require(Utility.ClassPriorityMap),
 	StandalonePriority = require(Utility.StandalonePriorityMap),
-	Modules = {
-		ServerStorage:WaitForChild("Modules"),
-		Services,
+	-- Inject live packages; reach them in modules with context:GetPackage("Name").
+	Inject = {
+		Constants = { Version = "0.1.0" },
 	},
+	-- ServerStorage.Modules holds the server's Managers AND Services.
+	Modules = { ServerStorage:WaitForChild("Modules") },
 })
 
 print("[ServerBootstrap] Junky configured (Server)")
@@ -219,16 +240,19 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Junky = findJunky()
 local SharedModules = ReplicatedStorage:WaitForChild("Shared").Modules
 local ClientModules = ReplicatedStorage:WaitForChild("Client").Modules
+local Utility = SharedModules.Utility
 
 Junky.Configure({
-	Junction = require(SharedModules.Utility.Junction),
-	Manifest = require(SharedModules.Utility.Manifest),
-	ClassPriority = require(SharedModules.Utility.ClassPriorityMap),
-	StandalonePriority = require(SharedModules.Utility.StandalonePriorityMap),
-	Modules = {
-		ClientModules,
-		SharedModules.Services,
+	Junction = require(Utility.Junction),
+	Manifest = require(Utility.Manifest),
+	ClassPriority = require(Utility.ClassPriorityMap),
+	StandalonePriority = require(Utility.StandalonePriorityMap),
+	-- Inject live packages; reach them in modules with context:GetPackage("Name").
+	Inject = {
+		Constants = { Version = "0.1.0" },
 	},
+	-- Client.Modules holds the client's Controllers AND Services.
+	Modules = { ClientModules },
 })
 
 print("[ClientBootstrap] Junky configured (Client)")

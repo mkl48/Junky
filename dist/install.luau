@@ -48,9 +48,10 @@ local _1 = mod("Junky", RS, [[
 --   local app = Junky.Configure({
 --       Junction = require(Utility.Junction),             -- the routing map
 --       Manifest = require(Utility.Manifest),             -- read-only config
---       Modules = { ServerStorage.Modules, ReplicatedStorage.Shared.Modules.Services },
+--       Modules = { ServerStorage.Modules },              -- Managers + server Services
 --       ClassPriority = require(Utility.ClassPriorityMap),
 --       StandalonePriority = require(Utility.StandalonePriorityMap),
+--       Inject = { Profiles = require(...) },             -- live packages -> GetPackage
 --   })
 --
 --   -- app:Inspect()  -> live topology snapshot
@@ -131,9 +132,10 @@ mod("Bootstrap", _1, [[
 --
 -- The single entry point for a side. Bootstrap:
 --   1. stands up the Router + Network (the transport),
---   2. builds the shared runtime (Packages, Utilities, frozen Manifest),
+--   2. builds the shared runtime (injected Packages, Utilities, frozen Manifest, Player),
 --   3. discovers module scripts and classifies them by name suffix,
---   4. filters by side (Controllers -> client, Managers -> server, Services -> both),
+--   4. filters by side (Controllers -> client, Managers -> server; Services boot on
+--      whichever side discovers them -- so a Service is side-scoped by where it lives),
 --   5. validates the Junction against what it found,
 --   6. calls every module's :Start in priority order, each with its own Context,
 --   7. returns a handle with :Inspect() and :Stop().
@@ -143,6 +145,7 @@ mod("Bootstrap", _1, [[
 -- maps. Timing-sensitive cross-module dependencies use Context:Await.
 
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
 local Router = require(script.Parent.Router)
 local Network = require(script.Parent.Network)
@@ -228,10 +231,14 @@ function Bootstrap.Boot(config, substance)
 	network:Start()
 
 	-- shared runtime ------------------------------------------------------
+	-- Injected dependencies, reachable via Context:GetPackage. `Inject` is the
+	-- name to use; `Packages` is accepted as an alias. Later sources win.
 	local packages = {}
-	if config.Packages then
-		for name, value in config.Packages do
-			packages[name] = value
+	for _, source in { config.Packages, config.Inject } do
+		if source then
+			for name, value in source do
+				packages[name] = value
+			end
 		end
 	end
 	if config.Manifest ~= nil then
@@ -241,8 +248,13 @@ function Bootstrap.Boot(config, substance)
 	local instances = {} -- [name] = module table
 	local kinds = {} -- [name] = "Controller" | "Manager" | "Service"
 
+	-- The acting player: the LocalPlayer on the client, nil on the server (where
+	-- there is no single player). Surfaced as Context.Player.
+	local player = if side == "Client" then Players.LocalPlayer else nil
+
 	local runtime = {
 		Side = side,
+		Player = player,
 		Router = router,
 		Network = network,
 		Packages = packages,
@@ -377,6 +389,7 @@ mod("Context", _1, [[
 -- know who is posting without the caller passing it.
 --
 -- Surface:
+--   Side / Source / Player             -- side, owning module name, acting player
 --   Post / Subscribe / Once            -- fire-and-forget
 --   Request / Respond                  -- request/response (returns a Reaction)
 --   Guard                              -- veto predicate on an event
@@ -399,6 +412,8 @@ function Context.new(source: string, runtime)
 	local self = setmetatable({}, Context)
 	self.Source = source
 	self.Side = runtime.Side
+	-- The acting player: LocalPlayer on the client, nil on the server.
+	self.Player = runtime.Player
 	self._runtime = runtime
 	self._networkScopes = {}
 	self._localScopes = {}
@@ -1436,6 +1451,7 @@ export type LocalScope = {
 export type Context = {
 	Side: Side,
 	Source: string,
+	Player: Player?,
 
 	Post: (self: Context, namespace: Namespace, domain: string, name: string, ...any) -> (),
 	Subscribe: (self: Context, namespace: Namespace, domain: string, name: string, handler: (...any) -> ()) -> Subscription,
@@ -1480,6 +1496,7 @@ export type Config = {
 	Modules: (Instance | { Instance })?,
 	ClassPriority: { [number]: { string } }?,
 	StandalonePriority: { [string]: number }?,
+	Inject: { [string]: any }?,
 	Packages: { [string]: any }?,
 	Utilities: { [string]: any }?,
 	Side: Side?,

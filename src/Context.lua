@@ -7,6 +7,7 @@
 -- know who is posting without the caller passing it.
 --
 -- Surface:
+--   Side / Source / Player             -- side, owning module name, acting player
 --   Post / Subscribe / Once            -- fire-and-forget
 --   Request / Respond                  -- request/response (returns a Reaction)
 --   Guard                              -- veto predicate on an event
@@ -29,6 +30,8 @@ function Context.new(source: string, runtime)
 	local self = setmetatable({}, Context)
 	self.Source = source
 	self.Side = runtime.Side
+	-- The acting player: LocalPlayer on the client, nil on the server.
+	self.Player = runtime.Player
 	self._runtime = runtime
 	self._networkScopes = {}
 	self._localScopes = {}

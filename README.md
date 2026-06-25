@@ -83,12 +83,12 @@ ReplicatedStorage/
     Modules/
       Packages/      Junky/       the framework package (+ Substance)
       Utility/                    Junction, Manifest, ClassPriorityMap, StandalonePriorityMap
-      Services/                   *Service modules (both sides)
   Client/
     Modules/
       Packages/                   client-only deps
       Utility/                    client-only helpers
       Controllers/                *Controller modules (client)
+      Services/                   *Service modules (client half)
 
 ServerScriptService/
   ServerBootstrap                 server entry point (Script)
@@ -98,6 +98,7 @@ ServerStorage/
     Managers/                     *Manager modules (server-only, not replicated)
     Packages/                     server-only deps
     Utility/                      server-only helpers
+    Services/                     *Service modules (server half)
 
 StarterPlayer/StarterPlayerScripts/
   ClientBootstrap                 client entry point (LocalScript)
@@ -107,6 +108,12 @@ Discovery is **recursive and name-based** — a Bootstrap passes root folders an
 `ModuleScript` under them, classifying by suffix (`*Controller`/`*Manager`/`*Service`) and
 side-filtering. The folders above are organization for you; Junky doesn't require these exact
 paths. Managers live in `ServerStorage` so their source never replicates to clients.
+
+**Services are side-split.** A Service boots on whichever side discovers it, so put the client half
+under `Client/Modules/Services` and the server half under `ServerStorage/Modules/Services`. The two
+halves can share a domain name (like a Controller/Manager pair) since they never run in the same
+VM. For genuinely shared logic, a single Service placed somewhere both Bootstraps pass still boots
+on both — but the recommended layout keeps them split.
 
 ---
 
@@ -119,12 +126,13 @@ paths. Managers live in `ServerStorage` so their source never replicates to clie
 | **Context** | Injected into `:Start`. The only way modules talk: `Post`, `Subscribe`, `Request`, `Respond`, `Guard`, `Once`, `Await`, `Get*`. |
 | **Controller** | Client-side domain wrapper. Coupled to a Manager. |
 | **Manager** | Server-side domain wrapper. Coupled to a Controller. |
-| **Service** | Domain logic + state owner. Both sides. Decoupled. |
+| **Service** | Domain logic + state owner. Side-split (client half / server half) and decoupled. |
 | **Manifest** | Read-only config, deep-frozen at boot. `Context:GetPackage("Manifest")`. |
 
 Modules are plain `ModuleScript`s. Junky classifies them by name suffix —
-`*Controller`, `*Manager`, `*Service` — and side-filters automatically (Controllers boot on the
-client, Managers on the server, Services on both).
+`*Controller`, `*Manager`, `*Service` — and side-filters automatically: Controllers boot on the
+client, Managers on the server, and Services boot on whichever side discovers them (so a Service is
+side-scoped by where it lives).
 
 ---
 
@@ -181,13 +189,14 @@ Junky.Configure({
     Manifest            = require(Utility.Manifest),
     ClassPriority       = require(Utility.ClassPriorityMap),
     StandalonePriority  = require(Utility.StandalonePriorityMap),
-    Modules             = { ServerStorage.Modules, ReplicatedStorage.Shared.Modules.Services },
+    Inject              = { Profiles = require(ServerStorage.ProfileStore) },  -- optional
+    Modules             = { ServerStorage.Modules },   -- Managers + server Services
 })
 ```
 
 The client Bootstrap is the same call from `StarterPlayerScripts`, passing
-`{ ReplicatedStorage.Client.Modules, ReplicatedStorage.Shared.Modules.Services }` — Junky detects
-the side and boots only the Controllers.
+`{ ReplicatedStorage.Client.Modules }` — Junky detects the side and boots that side's Controllers
+and Services.
 
 A Junction map:
 
@@ -238,6 +247,11 @@ The full Character Combat flow is in [`examples/`](examples).
 ## Context API
 
 ```lua
+-- identity
+context.Side    -- "Server" | "Client"
+context.Source  -- the owning module's name (what Junction Dynamic(source) sees)
+context.Player  -- the LocalPlayer on the client; nil on the server
+
 -- fire and forget
 context:Post(namespace, domain, name, ...)
 context:Subscribe(namespace, domain, name, handler)   --> Subscription (:Cancel())
@@ -252,7 +266,7 @@ context:Guard(namespace, domain, name, predicate)      --> Subscription (return 
 context:Await(key)                                     --> Reaction (resolves on first post of "Domain.Name")
 
 -- access
-context:GetPackage(name)   -- Manifest + any extra packages
+context:GetPackage(name)   -- Manifest + anything passed via config.Inject
 context:GetUtility(name)
 context:GetService(name)   -- a booted module (Manager -> its Service)
 
@@ -285,6 +299,35 @@ Ability:Respond("Resolve", function(combo) return verdict end)
 server, `Network:Post` goes down to every client; `:PostTo`/`:RequestFrom` target one. Server-side
 Network subscribers/responders receive the **sending Player as a trailing argument** — never trust
 a player field inside the payload.
+
+---
+
+## Injected packages & the acting player
+
+Pass live dependencies (third-party libs, your own singletons) through `config.Inject`. They land in
+the package registry and every module reaches them with `Context:GetPackage(name)` — the same place
+the frozen `Manifest` lives. (`config.Packages` is accepted as an alias.)
+
+```lua
+Junky.Configure({
+    Inject = { Profiles = require(ServerStorage.ProfileStore), Net = SomeLib },
+    -- ...
+})
+
+-- in any module:
+function PlayerManager:Start(context)
+    local profiles = context:GetPackage("Profiles")
+end
+```
+
+`Context.Player` is the **LocalPlayer on the client and `nil` on the server** (there is no single
+player server-side — server handlers get the sending Player as a trailing argument instead):
+
+```lua
+function HudController:Start(context)
+    print("HUD for", context.Player.Name)   -- client only; nil-check if shared
+end
+```
 
 ---
 

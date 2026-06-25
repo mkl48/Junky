@@ -65,6 +65,7 @@ export type LocalScope = {
 export type Context = {
 	Side: Side,
 	Source: string,
+	Player: Player?,
 
 	Post: (self: Context, namespace: Namespace, domain: string, name: string, ...any) -> (),
 	Subscribe: (self: Context, namespace: Namespace, domain: string, name: string, handler: (...any) -> ()) -> Subscription,
@@ -109,6 +110,7 @@ export type Config = {
 	Modules: (Instance | { Instance })?,
 	ClassPriority: { [number]: { string } }?,
 	StandalonePriority: { [string]: number }?,
+	Inject: { [string]: any }?,
 	Packages: { [string]: any }?,
 	Utilities: { [string]: any }?,
 	Side: Side?,
